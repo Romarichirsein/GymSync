@@ -1,0 +1,6 @@
+{
+  "name": "Gestion Adhérents Gym Multi-Tenant",
+  "description": "Application multi-tenant de gestion des adhérents pour plusieurs salles de sport avec fiches de profils, photos, génération de factures, téléchargement de listes, alertes d'expiration à 5 jours propulsées par l'IA et base de données Sanity Headless CMS.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
