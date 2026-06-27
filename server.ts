@@ -6,7 +6,7 @@ import { GoogleGenAI } from "@google/genai";
 import { createClient } from "@sanity/client";
 import { Gym, Member, Invoice, AlertLog, SanityConfig, ManagerLog } from "./src/types.js";
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(process.cwd(), "data", "db.json");
 
 // Ensure data directory exists
