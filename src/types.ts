@@ -103,3 +103,14 @@ export interface ManagerLog {
   createdAt: string;
 }
 
+export interface OneTimeSession {
+  id: string;
+  gymId: string;
+  visitorName: string;
+  visitorPhone?: string;
+  amount: number;
+  paymentMethod: string;
+  date: string;
+  createdAt: string;
+}
+

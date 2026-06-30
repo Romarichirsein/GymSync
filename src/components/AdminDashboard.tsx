@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Gym, AlertLog, SanityConfig, SubscriptionPlan, Member } from "../types";
+import { Gym, AlertLog, SanityConfig, SubscriptionPlan, Member, OneTimeSession } from "../types";
 import {
   Building2,
   Database,
@@ -32,7 +32,8 @@ import {
   Bell,
   ShieldAlert,
   Download,
-  Code
+  Code,
+  Zap
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -54,6 +55,10 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
 
   // UI Active Tab
   const [activeTab, setActiveTab] = useState<"gyms" | "sanity" | "logs" | "reports">("gyms");
+
+  // One-time sessions global state
+  const [oneTimeSessions, setOneTimeSessions] = useState<OneTimeSession[]>([]);
+  const [adminReportPeriod, setAdminReportPeriod] = useState<"week" | "month">("month");
 
   // Form State
   const [isEditingGym, setIsEditingGym] = useState<boolean>(false);
@@ -99,12 +104,14 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
       fetch("/api/alerts/logs").then((res) => res.json()),
       fetch("/api/sanity-config").then((res) => res.json()),
       fetch("/api/members").then((res) => res.json()),
+      fetch("/api/one-time-sessions").then((res) => res.json()),
     ])
-      .then(([gymsData, logsData, sanityData, membersData]) => {
+      .then(([gymsData, logsData, sanityData, membersData, sessionsData]) => {
         setGyms(gymsData);
         setAlertLogs(logsData);
         setSanityConfig(sanityData);
         setMembers(membersData || []);
+        setOneTimeSessions(sessionsData || []);
         setLoading(false);
       })
       .catch((err) => {
@@ -1242,7 +1249,7 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
               </div>
 
               {/* KPI Cards Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
                 <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
                   <div className="flex items-center justify-between mb-3">
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Salles de Sport (Écoles)</span>
@@ -1281,6 +1288,21 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                   </p>
                   <p className="text-[10px] text-slate-500 font-medium mt-1">
                     {members.filter((m) => m.status === "Active").length} actifs / {members.filter((m) => m.status === "Expired").length} expirés
+                  </p>
+                </div>
+
+                <div className="bg-white border border-slate-200 p-5 rounded-2xl shadow-sm">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xs font-bold uppercase tracking-wider text-slate-400">Revenus Séances</span>
+                    <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center border border-indigo-100">
+                      <Zap className="w-4 h-4 text-indigo-600" />
+                    </div>
+                  </div>
+                  <p className="text-2xl font-display font-bold text-slate-900 font-mono">
+                    {oneTimeSessions.reduce((sum, s) => sum + s.amount, 0).toLocaleString("fr-FR")} F
+                  </p>
+                  <p className="text-[10px] text-indigo-600 font-bold mt-1">
+                    {oneTimeSessions.length} entrées au total
                   </p>
                 </div>
 
@@ -1376,6 +1398,104 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                 </div>
               </div>
 
+              {/* Aggregated One-Time Sessions Network-Wide Report */}
+              <div className="bg-white border border-slate-200 p-6 rounded-2xl shadow-sm space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
+                  <div>
+                    <h3 className="font-display font-bold text-slate-800 text-sm uppercase tracking-wider">
+                      Rapport consolidé des séances (Réseau Global)
+                    </h3>
+                    <p className="text-slate-400 text-[11px] mt-0.5 font-medium">
+                      Historique de facturation des tickets à l'échelle de l'ensemble du réseau SaaS.
+                    </p>
+                  </div>
+                  <div className="flex bg-slate-100 rounded-lg p-0.5 border border-slate-200/50">
+                    <button
+                      type="button"
+                      onClick={() => setAdminReportPeriod("month")}
+                      className={`text-[10px] font-bold px-3 py-1.5 rounded-md cursor-pointer transition-colors ${
+                        adminReportPeriod === "month"
+                          ? "bg-white text-slate-850 shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      Mensuel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAdminReportPeriod("week")}
+                      className={`text-[10px] font-bold px-3 py-1.5 rounded-md cursor-pointer transition-colors ${
+                        adminReportPeriod === "week"
+                          ? "bg-white text-slate-850 shadow-sm"
+                          : "text-slate-500 hover:text-slate-800"
+                      }`}
+                    >
+                      Hebdomadaire
+                    </button>
+                  </div>
+                </div>
+
+                {(() => {
+                  const groups: Record<string, { label: string; count: number; total: number }> = {};
+                  
+                  oneTimeSessions.forEach((s) => {
+                    const dateObj = new Date(s.date);
+                    if (adminReportPeriod === "month") {
+                      const monthLabel = dateObj.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+                      const formattedLabel = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+                      const key = `${dateObj.getFullYear()}-${dateObj.getMonth()}`;
+                      
+                      if (!groups[key]) {
+                        groups[key] = { label: formattedLabel, count: 0, total: 0 };
+                      }
+                      groups[key].count += 1;
+                      groups[key].total += s.amount;
+                    } else {
+                      const d = new Date(Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()));
+                      const dayNum = d.getUTCDay() || 7;
+                      d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+                      const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+                      const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+                      
+                      const label = `Semaine ${weekNo} (${d.getFullYear()})`;
+                      const key = `${d.getFullYear()}-W${weekNo}`;
+                      
+                      if (!groups[key]) {
+                        groups[key] = { label, count: 0, total: 0 };
+                      }
+                      groups[key].count += 1;
+                      groups[key].total += s.amount;
+                    }
+                  });
+
+                  const sortedGroups = Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
+
+                  if (sortedGroups.length === 0) {
+                    return (
+                      <div className="text-center py-8 text-xs text-slate-400 italic">
+                        Aucune séance enregistrée à l'échelle du réseau.
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 max-h-56 overflow-y-auto pr-1">
+                      {sortedGroups.map(([key, item]) => (
+                        <div key={key} className="bg-slate-50 border border-slate-100 p-4 rounded-xl flex items-center justify-between text-xs">
+                          <div>
+                            <span className="font-semibold text-slate-800 block">{item.label}</span>
+                            <span className="text-[10px] text-slate-400 block mt-0.5">{item.count} séance{item.count > 1 ? "s" : ""}</span>
+                          </div>
+                          <span className="font-bold text-slate-900 font-mono text-xs">
+                            {item.total.toLocaleString("fr-FR")} FCFA
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+
               {/* Detailed Real-Time Gym Summary Table */}
               <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
                 <div className="px-6 py-4 border-b border-slate-150 bg-slate-50/50">
@@ -1392,6 +1512,8 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                         <th className="py-3 px-6 text-center">Élèves Totaux</th>
                         <th className="py-3 px-6 text-center">Actifs</th>
                         <th className="py-3 px-6 text-center">Expirés</th>
+                        <th className="py-3 px-6 text-center">Nb. Séances</th>
+                        <th className="py-3 px-6 text-right">Revenus Séances</th>
                         <th className="py-3 px-6 text-right">Statut SaaS</th>
                       </tr>
                     </thead>
@@ -1400,6 +1522,9 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                         const gymMems = members.filter((m) => m.gymId === gym.id);
                         const activeCount = gymMems.filter((m) => m.status === "Active").length;
                         const expiredCount = gymMems.filter((m) => m.status === "Expired").length;
+                        const gymSessions = oneTimeSessions.filter((s) => s.gymId === gym.id);
+                        const sessionCount = gymSessions.length;
+                        const sessionRevenue = gymSessions.reduce((sum, s) => sum + s.amount, 0);
 
                         return (
                           <tr key={gym.id} className="hover:bg-slate-50/50 transition-colors">
@@ -1411,6 +1536,8 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
                             <td className="py-3.5 px-6 text-center font-bold text-slate-900">{gymMems.length}</td>
                             <td className="py-3.5 px-6 text-center text-emerald-600 font-semibold">{activeCount}</td>
                             <td className="py-3.5 px-6 text-center text-slate-400">{expiredCount}</td>
+                            <td className="py-3.5 px-6 text-center font-mono font-semibold text-slate-700">{sessionCount}</td>
+                            <td className="py-3.5 px-6 text-right font-mono font-bold text-slate-900">{sessionRevenue.toLocaleString("fr-FR")} F</td>
                             <td className="py-3.5 px-6 text-right">
                               <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase px-2 py-0.5 rounded-md bg-blue-50 border border-blue-200 text-blue-600">
                                 Actif

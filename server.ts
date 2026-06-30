@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
 import { createClient } from "@sanity/client";
-import { Gym, Member, Invoice, AlertLog, SanityConfig, ManagerLog } from "./src/types.js";
+import { Gym, Member, Invoice, AlertLog, SanityConfig, ManagerLog, OneTimeSession } from "./src/types.js";
 
 const PORT = process.env.PORT || 3000;
 const DB_PATH = path.join(process.cwd(), "data", "db.json");
@@ -212,6 +212,7 @@ interface Schema {
   alertLogs: AlertLog[];
   sanityConfig: SanityConfig;
   managerLogs?: ManagerLog[];
+  oneTimeSessions?: OneTimeSession[];
 }
 
 function readDb(): Schema {
@@ -221,10 +222,21 @@ function readDb(): Schema {
     if (!parsed.managerLogs) {
       parsed.managerLogs = [];
     }
+    if (!parsed.oneTimeSessions) {
+      parsed.oneTimeSessions = [];
+    }
     return parsed;
   } catch (error) {
     console.error("Error reading db.json", error);
-    return { gyms: initialGyms, members: initialMembers, invoices: initialInvoices, alertLogs: initialAlertLogs, sanityConfig: defaultSanityConfig, managerLogs: [] };
+    return {
+      gyms: initialGyms,
+      members: initialMembers,
+      invoices: initialInvoices,
+      alertLogs: initialAlertLogs,
+      sanityConfig: defaultSanityConfig,
+      managerLogs: [],
+      oneTimeSessions: []
+    };
   }
 }
 
@@ -526,9 +538,25 @@ async function startServer() {
         });
       }
 
+      // 4. Sync One-Time Sessions
+      const sessionsToSync = db.oneTimeSessions || [];
+      for (const sess of sessionsToSync) {
+        await client.createOrReplace({
+          _type: "oneTimeSession",
+          _id: `session-${sess.id}`,
+          gymId: sess.gymId,
+          visitorName: sess.visitorName,
+          visitorPhone: sess.visitorPhone || "",
+          amount: sess.amount,
+          paymentMethod: sess.paymentMethod,
+          date: sess.date,
+          createdAt: sess.createdAt,
+        });
+      }
+
       res.json({
         success: true,
-        message: `Synchronisation terminée ! ${db.gyms.length} salles, ${db.members.length} adhérents et ${db.invoices.length} factures envoyés sur le Cloud Sanity.`,
+        message: `Synchronisation terminée ! ${db.gyms.length} salles, ${db.members.length} adhérents, ${db.invoices.length} factures et ${sessionsToSync.length} séances uniques envoyés sur le Cloud Sanity.`,
       });
     } catch (err: any) {
       console.error("Sanity Sync Failed:", err);
@@ -953,6 +981,143 @@ async function startServer() {
     }
 
     res.json({ success: true, invoice: invoiceData });
+  });
+
+
+  // ONE-TIME SESSIONS Endpoints
+  app.get("/api/one-time-sessions", (req, res) => {
+    const db = readDb();
+    res.json(db.oneTimeSessions || []);
+  });
+
+  app.get("/api/gyms/:gymId/one-time-sessions", async (req, res) => {
+    const db = readDb();
+    const gymId = req.params.gymId;
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const sanitySessions = await client.fetch<any[]>(
+            `*[_type == "oneTimeSession" && gymId == $gymId]`,
+            { gymId }
+          );
+          if (sanitySessions && sanitySessions.length > 0) {
+            const mappedSessions = sanitySessions.map((s) => ({
+              id: s._id.replace(/^session-/, ""),
+              gymId: s.gymId,
+              visitorName: s.visitorName || "Visiteur",
+              visitorPhone: s.visitorPhone || "",
+              amount: s.amount || 0,
+              paymentMethod: s.paymentMethod || "Espèces",
+              date: s.date,
+              createdAt: s.createdAt,
+            }));
+
+            // update local cache
+            db.oneTimeSessions = db.oneTimeSessions || [];
+            let dbChanged = false;
+            for (const item of mappedSessions) {
+              const idx = db.oneTimeSessions.findIndex(x => x.id === item.id);
+              if (idx > -1) {
+                db.oneTimeSessions[idx] = { ...db.oneTimeSessions[idx], ...item };
+              } else {
+                db.oneTimeSessions.push(item);
+              }
+              dbChanged = true;
+            }
+            if (dbChanged) {
+              writeDb(db);
+            }
+
+            return res.json(mappedSessions);
+          }
+        } catch (err) {
+          console.error("Failed to fetch sessions from Sanity, falling back to local:", err);
+        }
+      }
+    }
+    const localSessions = (db.oneTimeSessions || []).filter((s) => s.gymId === gymId);
+    res.json(localSessions);
+  });
+
+  app.post("/api/one-time-sessions", async (req, res) => {
+    const db = readDb();
+    const sessionData = req.body as OneTimeSession;
+
+    sessionData.id = sessionData.id || `session-${Date.now()}`;
+    sessionData.createdAt = sessionData.createdAt || new Date().toISOString();
+    sessionData.date = sessionData.date || new Date().toISOString().split("T")[0];
+    
+    db.oneTimeSessions = db.oneTimeSessions || [];
+    db.oneTimeSessions.push(sessionData);
+
+    addManagerLog(
+      db,
+      sessionData.gymId,
+      "Séance unique enregistrée",
+      `Entrée enregistrée pour ${sessionData.visitorName} d'un montant de ${sessionData.amount.toLocaleString('fr-FR')} FCFA (${sessionData.paymentMethod})`
+    );
+
+    writeDb(db);
+
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          await client.createOrReplace({
+            _type: "oneTimeSession",
+            _id: `session-${sessionData.id}`,
+            gymId: sessionData.gymId,
+            visitorName: sessionData.visitorName,
+            visitorPhone: sessionData.visitorPhone || "",
+            amount: sessionData.amount,
+            paymentMethod: sessionData.paymentMethod,
+            date: sessionData.date,
+            createdAt: sessionData.createdAt,
+          });
+        } catch (err) {
+          console.error("Sanity session sync failed", err);
+        }
+      }
+    }
+
+    res.json({ success: true, session: sessionData });
+  });
+
+  app.delete("/api/one-time-sessions/:id", async (req, res) => {
+    const db = readDb();
+    const id = req.params.id;
+    
+    db.oneTimeSessions = db.oneTimeSessions || [];
+    const sessionIndex = db.oneTimeSessions.findIndex((s) => s.id === id);
+    
+    if (sessionIndex > -1) {
+      const sessionData = db.oneTimeSessions[sessionIndex];
+      db.oneTimeSessions.splice(sessionIndex, 1);
+      
+      addManagerLog(
+        db,
+        sessionData.gymId,
+        "Séance unique annulée",
+        `Séance unique de ${sessionData.visitorName} d'un montant de ${sessionData.amount.toLocaleString('fr-FR')} FCFA a été supprimée`
+      );
+      
+      writeDb(db);
+      
+      if (db.sanityConfig.useSanity) {
+        const client = getSanityClient(db.sanityConfig);
+        if (client) {
+          try {
+            await client.delete(`session-${id}`);
+          } catch (err) {
+            console.error("Sanity session delete failed", err);
+          }
+        }
+      }
+      return res.json({ success: true });
+    }
+    
+    res.status(404).json({ success: false, message: "Séance introuvable." });
   });
 
 

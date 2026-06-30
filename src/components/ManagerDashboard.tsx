@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Gym, Member, Invoice, SubscriptionPlan, AlertLog, GymNotification } from "../types";
+import { Gym, Member, Invoice, SubscriptionPlan, AlertLog, GymNotification, OneTimeSession } from "../types";
 import {
   Users,
   Search,
@@ -141,9 +141,29 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
   const [chartType, setChartType] = useState<"donut" | "bar">("donut");
   const [shortcutMemberId, setShortcutMemberId] = useState<string>("");
 
+  // One-time sessions state
+  const [oneTimeSessions, setOneTimeSessions] = useState<OneTimeSession[]>(() => {
+    try {
+      const cached = localStorage.getItem(`sessions_${gymId}`);
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
+
   // Manager Custom Settings States
-  const [activeView, setActiveView] = useState<"members" | "stats" | "config" | "logs">("members");
+  const [activeView, setActiveView] = useState<"members" | "sessions" | "stats" | "config" | "logs">("members");
   const [managerLogs, setManagerLogs] = useState<any[]>([]);
+
+  // One-time session form states
+  const [sessName, setSessName] = useState("");
+  const [sessPhone, setSessPhone] = useState("");
+  const [sessAmount, setSessAmount] = useState<number | "other">(1500);
+  const [customAmount, setCustomAmount] = useState("");
+  const [sessPaymentMethod, setSessPaymentMethod] = useState("Espèces");
+  const [sessDate, setSessDate] = useState(() => new Date().toISOString().split("T")[0]);
+  const [submittingSession, setSubmittingSession] = useState(false);
+  const [sessionReportPeriod, setSessionReportPeriod] = useState<"week" | "month">("month");
   const [loadingLogs, setLoadingLogs] = useState<boolean>(false);
   const [logSearchQuery, setLogSearchQuery] = useState<string>("");
   const [logStartDate, setLogStartDate] = useState<string>("");
@@ -265,6 +285,8 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
         return sum + (planPrice / duration);
       }, 0);
 
+      const sessionsRevenue = oneTimeSessions.reduce((sum, s) => sum + s.amount, 0);
+
       return {
         id: g.id,
         name: g.name,
@@ -276,19 +298,25 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
         activeCount: activeMembers.length,
         suspendedCount: suspendedMembers.length,
         expiredCount: expiredMembers.length,
-        estimatedRevenue: Math.round(estimatedRevenue)
+        estimatedRevenue: Math.round(estimatedRevenue),
+        sessionsRevenue,
+        totalRevenue: Math.round(estimatedRevenue) + sessionsRevenue
       };
     });
-  }, [allGyms, allMembers, gymId]);
+  }, [allGyms, allMembers, gymId, oneTimeSessions]);
 
   // Overall statistics across all gyms (for the current manager, this is only their gym)
   const overallStats = React.useMemo(() => {
     const totalActive = statsPerGym.reduce((sum, g) => sum + g.activeCount, 0);
-    const totalRevenue = statsPerGym.reduce((sum, g) => sum + g.estimatedRevenue, 0);
+    const totalSubscriptionRevenue = statsPerGym.reduce((sum, g) => sum + g.estimatedRevenue, 0);
+    const totalSessionRevenue = statsPerGym.reduce((sum, g) => sum + g.sessionsRevenue, 0);
+    const totalRevenue = totalSubscriptionRevenue + totalSessionRevenue;
     const totalMembers = statsPerGym.reduce((sum, g) => sum + g.totalMembers, 0);
     const filteredGyms = allGyms.filter((g) => g.id === gymId);
     return {
       totalActive,
+      totalSubscriptionRevenue,
+      totalSessionRevenue,
       totalRevenue,
       totalMembers,
       gymsCount: filteredGyms.length
@@ -462,11 +490,17 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
       fetch(`/api/gyms/${gymId}/members`).then((res) => res.json()),
       fetch("/api/members").then((res) => res.json()),
       fetch("/api/alerts/expiring").then((res) => res.json()),
-      fetch(`/api/gyms/${gymId}/notifications`).then((res) => res.json())
+      fetch(`/api/gyms/${gymId}/notifications`).then((res) => res.json()),
+      fetch(`/api/gyms/${gymId}/one-time-sessions`).then((res) => res.json())
     ])
-      .then(([membersList, allMembersList, expiringList, notificationsList]) => {
+      .then(([membersList, allMembersList, expiringList, notificationsList, sessionsList]) => {
         setMembers(membersList);
         localStorage.setItem(`members_${gymId}`, JSON.stringify(membersList));
+
+        if (Array.isArray(sessionsList)) {
+          setOneTimeSessions(sessionsList);
+          localStorage.setItem(`sessions_${gymId}`, JSON.stringify(sessionsList));
+        }
 
         if (Array.isArray(allMembersList)) {
           setAllMembers(allMembersList);
@@ -853,6 +887,161 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
         showToast("Échec d'enregistrement de la facture.", "error");
       })
       .finally(() => setLoading(false));
+  };
+
+  const handleCreateSession = (e: React.FormEvent) => {
+    e.preventDefault();
+    const finalAmount = sessAmount === "other" ? parseFloat(customAmount) : sessAmount;
+    if (isNaN(finalAmount) || finalAmount <= 0) {
+      showToast("Veuillez saisir un tarif valide.", "error");
+      return;
+    }
+
+    setSubmittingSession(true);
+    const newSession: Partial<OneTimeSession> = {
+      gymId,
+      visitorName: sessName.trim() || "Visiteur",
+      visitorPhone: sessPhone.trim() || undefined,
+      amount: finalAmount,
+      paymentMethod: sessPaymentMethod,
+      date: sessDate
+    };
+
+    fetch("/api/one-time-sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(newSession)
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          showToast("Séance unique enregistrée avec succès !", "success");
+          setSessName("");
+          setSessPhone("");
+          setCustomAmount("");
+          loadGymData();
+        } else {
+          showToast("Échec de l'enregistrement de la séance.", "error");
+        }
+      })
+      .catch((err) => {
+        console.error("Error creating session", err);
+        showToast("Erreur de connexion lors de l'enregistrement.", "error");
+      })
+      .finally(() => setSubmittingSession(false));
+  };
+
+  const handleDeleteSession = (id: string, name: string) => {
+    if (!window.confirm(`Voulez-vous vraiment annuler la séance enregistrée pour ${name} ?`)) {
+      return;
+    }
+    setLoading(true);
+    fetch(`/api/one-time-sessions/${id}`, {
+      method: "DELETE"
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success) {
+          showToast("Séance annulée avec succès.", "success");
+          loadGymData();
+        } else {
+          showToast("Impossible d'annuler la séance.", "error");
+        }
+      })
+      .catch((err) => {
+        console.error("Error deleting session", err);
+        showToast("Erreur réseau.", "error");
+      })
+      .finally(() => setLoading(false));
+  };
+
+  const handleDownloadPDFSessionTicket = (session: OneTimeSession) => {
+    const doc = new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [80, 150]
+    });
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(14);
+    doc.setTextColor(30, 41, 59);
+    doc.text((gym?.name || "GYMSYNC").toUpperCase(), 40, 15, { align: "center" });
+
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(8);
+    doc.setTextColor(100, 116, 139);
+    if (gym?.slogan) {
+      doc.text(gym.slogan, 40, 20, { align: "center" });
+    }
+    doc.text(gym?.address || "", 40, 24, { align: "center" });
+    doc.text(`Tél : ${gym?.phone || ""}`, 40, 28, { align: "center" });
+
+    doc.setDrawColor(203, 213, 225);
+    doc.setLineWidth(0.3);
+    doc.line(5, 32, 75, 32);
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(10);
+    doc.setTextColor(30, 41, 59);
+    doc.text("TICKET DE SÉANCE", 40, 39, { align: "center" });
+
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(8);
+    doc.text(`N° Ticket : SESS-${session.id.slice(-6).toUpperCase()}`, 8, 48);
+    doc.text(`Date : ${session.date}`, 8, 53);
+    
+    const timeStr = session.createdAt ? new Date(session.createdAt).toLocaleTimeString("fr-FR", { hour: '2-digit', minute: '2-digit' }) : "";
+    if (timeStr) {
+      doc.text(`Heure : ${timeStr}`, 8, 58);
+    }
+
+    doc.line(5, 63, 75, 63);
+
+    doc.setFont("Helvetica", "bold");
+    doc.text("Bénéficiaire :", 8, 70);
+    doc.setFont("Helvetica", "normal");
+    doc.text(session.visitorName, 30, 70);
+    if (session.visitorPhone) {
+      doc.text(`Téléphone : ${session.visitorPhone}`, 8, 75);
+    }
+
+    doc.line(5, 82, 75, 82);
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(9);
+    doc.text("DESCRIPTION", 8, 89);
+    doc.text("MONTANT", 72, 89, { align: "right" });
+
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.text("Accès Séance Unique Gym", 8, 97);
+    doc.setFont("Helvetica", "bold");
+    doc.text(`${session.amount.toLocaleString("fr-FR")} FCFA`, 72, 97, { align: "right" });
+
+    doc.line(5, 103, 75, 103);
+
+    doc.setFontSize(11);
+    doc.text("TOTAL PAYÉ", 8, 112);
+    doc.text(`${session.amount.toLocaleString("fr-FR")} FCFA`, 72, 112, { align: "right" });
+
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Règlement : ${session.paymentMethod}`, 8, 118);
+
+    doc.line(5, 124, 75, 124);
+
+    doc.setFont("Helvetica", "bold");
+    doc.setFontSize(8);
+    doc.setTextColor(30, 41, 59);
+    doc.text("MERCI DE VOTRE VISITE !", 40, 132, { align: "center" });
+    doc.setFont("Helvetica", "normal");
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text("Conservez ce ticket durant votre séance.", 40, 137, { align: "center" });
+    doc.text("GymSync Multi-Tenant SaaS Platform", 40, 142, { align: "center" });
+
+    doc.save(`ticket_seance_${session.visitorName.toLowerCase().replace(/\s+/g, "_")}_${session.id.slice(-6)}.pdf`);
   };
 
   // Helper to convert hex color to RGB for jsPDF
@@ -1706,6 +1895,24 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
             <Users className="w-4 h-4" />
             <span>Base Adhérents ({members.length})</span>
             {activeView === "members" && (
+              <motion.div
+                layoutId="managerActiveTab"
+                className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full"
+                style={{ backgroundColor: primaryColor }}
+              />
+            )}
+          </button>
+
+          <button
+            onClick={() => setActiveView("sessions")}
+            className="py-4 font-display text-xs font-bold uppercase tracking-wider relative transition-colors cursor-pointer flex items-center gap-2"
+            style={{
+              color: activeView === "sessions" ? primaryColor : (darkMode ? "#94a3b8" : "#64748b"),
+            }}
+          >
+            <Zap className="w-4 h-4" />
+            <span>Séances Uniques ({oneTimeSessions.length})</span>
+            {activeView === "sessions" && (
               <motion.div
                 layoutId="managerActiveTab"
                 className="absolute bottom-0 left-0 right-0 h-0.5 rounded-full"
@@ -2647,9 +2854,375 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
               ))}
             </div>
           )}
-        </div>
+          </div>
       </main>
     </>
+  ) : activeView === "sessions" ? (
+    <main className="max-w-7xl w-full mx-auto p-6 flex-grow space-y-8 no-print animate-fade-in">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
+        <div>
+          <h2 className="text-xl font-display font-bold text-slate-800 dark:text-slate-100 tracking-tight">
+            Gestion des Séances Uniques
+          </h2>
+          <p className="text-slate-500 text-xs mt-1">
+            Enregistrez les entrées et paiements uniques pour les séances à la carte (1000, 1500, 2000 FCFA).
+          </p>
+        </div>
+        <button
+          onClick={loadGymData}
+          className="flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold px-4 py-2.5 rounded-xl border border-slate-200 transition-colors cursor-pointer shadow-sm w-fit animate-fade-in"
+        >
+          <RefreshCw className="w-3.5 h-3.5 text-blue-600" style={{ animation: loading ? "spin 1.5s linear infinite" : "none" }} />
+          <span>Actualiser</span>
+        </button>
+      </div>
+
+      {/* KPI Cards Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 shadow-sm flex items-center gap-4 transition-colors">
+          <div className="p-3.5 rounded-xl bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 border border-blue-100 dark:border-blue-900/30">
+            <Zap className="w-6 h-6" />
+          </div>
+          <div>
+            <span className="text-xl font-bold text-slate-800 dark:text-slate-100 block font-mono">
+              {oneTimeSessions.filter(s => s.date === new Date().toISOString().split("T")[0]).length}
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block mt-0.5">
+              Séances Aujourd'hui
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 shadow-sm flex items-center gap-4 transition-colors">
+          <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/30">
+            <DollarSign className="w-6 h-6" />
+          </div>
+          <div>
+            <span className="text-xl font-bold text-slate-800 dark:text-slate-100 block font-mono">
+              {oneTimeSessions
+                .filter(s => s.date === new Date().toISOString().split("T")[0])
+                .reduce((sum, s) => sum + s.amount, 0)
+                .toLocaleString("fr-FR")} FCFA
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block mt-0.5">
+              Recette d'Aujourd'hui
+            </span>
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-5 shadow-sm flex items-center gap-4 transition-colors">
+          <div className="p-3.5 rounded-xl bg-purple-50 dark:bg-purple-950/20 text-purple-600 dark:text-purple-400 border border-purple-100 dark:border-purple-900/30">
+            <TrendingUp className="w-6 h-6" />
+          </div>
+          <div>
+            <span className="text-xl font-bold text-slate-800 dark:text-slate-100 block font-mono">
+              {oneTimeSessions.reduce((sum, s) => sum + s.amount, 0).toLocaleString("fr-FR")} FCFA
+            </span>
+            <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block mt-0.5">
+              Recettes Séances Cumulées
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Left: Quick Form */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-6 shadow-sm space-y-6 transition-colors">
+          <div>
+            <h3 className="font-display font-bold text-slate-800 dark:text-slate-100 text-sm uppercase tracking-wider">
+              Enregistrer une Séance Unique
+            </h3>
+            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">
+              Saisissez les détails de l'entrée visiteur.
+            </p>
+          </div>
+
+          <form onSubmit={handleCreateSession} className="space-y-4">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400">
+                Nom du visiteur
+              </label>
+              <input
+                type="text"
+                value={sessName}
+                onChange={(e) => setSessName(e.target.value)}
+                placeholder="Ex: Visiteur, Jean, etc."
+                className="w-full text-xs border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 bg-slate-50 dark:bg-slate-950 focus:outline-none focus:ring-1 focus:ring-slate-300 dark:focus:ring-slate-700"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400">
+                Téléphone (facultatif)
+              </label>
+              <input
+                type="text"
+                value={sessPhone}
+                onChange={(e) => setSessPhone(e.target.value)}
+                placeholder="Ex: +225 0707..."
+                className="w-full text-xs border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 bg-slate-50 dark:bg-slate-950 focus:outline-none focus:ring-1 focus:ring-slate-300 dark:focus:ring-slate-700"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400">
+                Date de séance
+              </label>
+              <input
+                type="date"
+                value={sessDate}
+                onChange={(e) => setSessDate(e.target.value)}
+                className="w-full text-xs border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 bg-slate-50 dark:bg-slate-950 focus:outline-none focus:ring-1 focus:ring-slate-300 dark:focus:ring-slate-700"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400">
+                Tarif de la séance (FCFA)
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[1000, 1500, 2000].map((val) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => setSessAmount(val)}
+                    className={`py-2 px-3 rounded-lg border text-xs font-bold font-mono transition-colors cursor-pointer text-center ${
+                      sessAmount === val
+                        ? "bg-slate-900 text-white border-slate-900 dark:bg-white dark:text-slate-900"
+                        : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700 dark:bg-slate-950 dark:hover:bg-slate-900 dark:border-slate-800 dark:text-slate-300"
+                    }`}
+                  >
+                    {val.toLocaleString("fr-FR")}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setSessAmount("other")}
+                className={`w-full mt-2 py-2 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer text-center ${
+                  sessAmount === "other"
+                    ? "bg-slate-900 text-white border-slate-900 dark:bg-white dark:text-slate-900"
+                    : "bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700 dark:bg-slate-950 dark:hover:bg-slate-900 dark:border-slate-800 dark:text-slate-300"
+                }`}
+              >
+                Autre Montant
+              </button>
+              {sessAmount === "other" && (
+                <div className="relative mt-2 animate-slide-up">
+                  <input
+                    type="number"
+                    value={customAmount}
+                    onChange={(e) => setCustomAmount(e.target.value)}
+                    placeholder="Saisir montant en FCFA"
+                    className="w-full text-xs border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 bg-slate-50 dark:bg-slate-950 focus:outline-none focus:ring-1 focus:ring-slate-300 dark:focus:ring-slate-700 font-mono"
+                    required
+                  />
+                  <span className="absolute right-4 top-3 text-xs font-bold text-slate-400 font-sans">FCFA</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400">
+                Mode de règlement
+              </label>
+              <select
+                value={sessPaymentMethod}
+                onChange={(e) => setSessPaymentMethod(e.target.value)}
+                className="w-full text-xs border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-3 bg-slate-50 dark:bg-slate-950 focus:outline-none focus:ring-1 focus:ring-slate-300 dark:focus:ring-slate-700 cursor-pointer"
+              >
+                <option value="Espèces">Espèces (Cash)</option>
+                <option value="Mobile Money">Mobile Money (OM/MTN/Wave)</option>
+                <option value="Autre">Autre Moyen</option>
+              </select>
+            </div>
+
+            <button
+              type="submit"
+              disabled={submittingSession}
+              style={{ backgroundColor: primaryColor }}
+              className="w-full text-white text-xs font-bold py-3.5 rounded-xl transition-colors cursor-pointer shadow-md shadow-slate-900/10 flex items-center justify-center gap-2 mt-4"
+            >
+              <span>Enregistrer l'Entrée</span>
+            </button>
+          </form>
+        </div>
+
+        {/* Right: History & Grouped Reports */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Periodic Reports Grouping panel */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-6 shadow-sm space-y-4 transition-colors">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-display font-bold text-slate-800 dark:text-slate-100 text-sm uppercase tracking-wider">
+                  Rapports consolidés des séances
+                </h3>
+                <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">
+                  Chiffre d'affaires agrégé de vos entrées.
+                </p>
+              </div>
+              <div className="flex bg-slate-100 dark:bg-slate-950 rounded-lg p-0.5 border border-slate-200/50 dark:border-slate-800">
+                <button
+                  onClick={() => setSessionReportPeriod("month")}
+                  className={`text-[10px] font-bold px-3 py-1.5 rounded-md cursor-pointer transition-colors ${
+                    sessionReportPeriod === "month"
+                      ? "bg-white text-slate-800 shadow-sm dark:bg-slate-900 dark:text-white"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  Mensuel
+                </button>
+                <button
+                  onClick={() => setSessionReportPeriod("week")}
+                  className={`text-[10px] font-bold px-3 py-1.5 rounded-md cursor-pointer transition-colors ${
+                    sessionReportPeriod === "week"
+                      ? "bg-white text-slate-800 shadow-sm dark:bg-slate-900 dark:text-white"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  Hebdomadaire
+                </button>
+              </div>
+            </div>
+
+            {/* Reports grouping calculation & render */}
+            {(() => {
+              const groups: Record<string, { label: string; count: number; total: number }> = {};
+              
+              oneTimeSessions.forEach((s) => {
+                const dateObj = new Date(s.date);
+                if (sessionReportPeriod === "month") {
+                  const monthLabel = dateObj.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+                  const formattedLabel = monthLabel.charAt(0).toUpperCase() + monthLabel.slice(1);
+                  const key = `${dateObj.getFullYear()}-${dateObj.getMonth()}`;
+                  
+                  if (!groups[key]) {
+                    groups[key] = { label: formattedLabel, count: 0, total: 0 };
+                  }
+                  groups[key].count += 1;
+                  groups[key].total += s.amount;
+                } else {
+                  const d = new Date(Date.UTC(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate()));
+                  const dayNum = d.getUTCDay() || 7;
+                  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+                  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+                  const weekNo = Math.ceil((((d.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+                  
+                  const label = `Semaine ${weekNo} (${d.getFullYear()})`;
+                  const key = `${d.getFullYear()}-W${weekNo}`;
+                  
+                  if (!groups[key]) {
+                    groups[key] = { label, count: 0, total: 0 };
+                  }
+                  groups[key].count += 1;
+                  groups[key].total += s.amount;
+                }
+              });
+
+              const sortedGroups = Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
+
+              if (sortedGroups.length === 0) {
+                return (
+                  <div className="text-center py-6 text-xs text-slate-400 italic">
+                    Aucune séance enregistrée pour calculer les rapports.
+                  </div>
+                );
+              }
+
+              return (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-h-48 overflow-y-auto pr-1">
+                  {sortedGroups.map(([key, item]) => (
+                    <div key={key} className="bg-slate-50 dark:bg-slate-950/50 border border-slate-100 dark:border-slate-850 p-4 rounded-xl flex items-center justify-between text-xs transition-colors">
+                      <div>
+                        <span className="font-semibold text-slate-800 dark:text-slate-200 block">{item.label}</span>
+                        <span className="text-[10px] text-slate-400 block mt-0.5">{item.count} séance{item.count > 1 ? "s" : ""}</span>
+                      </div>
+                      <span className="font-bold text-slate-900 dark:text-slate-100 font-mono text-sm">
+                        {item.total.toLocaleString("fr-FR")} FCFA
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* History table list */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl p-6 shadow-sm space-y-4 transition-colors">
+            <div>
+              <h3 className="font-display font-bold text-slate-800 dark:text-slate-100 text-sm uppercase tracking-wider">
+                Historique des entrées séances
+              </h3>
+              <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">
+                Visualisez les dernières séances et téléchargez les tickets de reçu.
+              </p>
+            </div>
+
+            {oneTimeSessions.length === 0 ? (
+              <div className="text-center py-10 border-2 border-dashed border-slate-100 dark:border-slate-800 rounded-xl text-slate-400 text-xs italic">
+                Aucune séance unique enregistrée dans cet établissement.
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-150 dark:border-slate-800 text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                      <th className="pb-3">Date</th>
+                      <th className="pb-3">Visiteur</th>
+                      <th className="pb-3 text-right">Tarif</th>
+                      <th className="pb-3 text-center">Mode</th>
+                      <th className="pb-3 pr-2 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {oneTimeSessions
+                      .slice()
+                      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                      .map((sess) => (
+                        <tr key={sess.id} className="border-b border-slate-100 dark:border-slate-800/60 hover:bg-slate-50/50 dark:hover:bg-slate-850/40 transition-colors text-slate-600 dark:text-slate-350">
+                          <td className="py-3 font-mono text-slate-500">{sess.date}</td>
+                          <td className="py-3">
+                            <span className="font-semibold text-slate-800 dark:text-slate-200 block">{sess.visitorName}</span>
+                            {sess.visitorPhone && (
+                              <span className="text-[10px] text-slate-400 block font-mono mt-0.5">{sess.visitorPhone}</span>
+                            )}
+                          </td>
+                          <td className="py-3 text-right font-bold text-slate-800 dark:text-slate-100 font-mono">
+                            {sess.amount.toLocaleString("fr-FR")} FCFA
+                          </td>
+                          <td className="py-3 text-center">
+                            <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-50 border border-slate-200/80 text-slate-600 dark:bg-slate-950 dark:border-slate-800 dark:text-slate-400">
+                              {sess.paymentMethod}
+                            </span>
+                          </td>
+                          <td className="py-3 pr-2 text-right">
+                            <div className="flex justify-end gap-1.5">
+                              <button
+                                onClick={() => handleDownloadPDFSessionTicket(sess)}
+                                className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors cursor-pointer"
+                                title="Télécharger le ticket de reçu"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteSession(sess.id, sess.visitorName)}
+                                className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                                title="Supprimer l'entrée"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </main>
   ) : activeView === "stats" ? (
     <main className="max-w-7xl w-full mx-auto p-6 flex-grow space-y-8 no-print animate-fade-in">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-200 pb-5">
@@ -2676,13 +3249,17 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
           <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/30">
             <DollarSign className="w-7 h-7" />
           </div>
-          <div>
+          <div className="space-y-1">
             <span className="text-2xl font-bold text-slate-800 dark:text-slate-100 block font-mono">
               {overallStats.totalRevenue.toLocaleString("fr-FR")} FCFA
             </span>
             <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider block mt-0.5">
-              Revenus Mensuels Estimés
+              Chiffre d'Affaires Global
             </span>
+            <div className="flex gap-3 text-[10px] text-slate-400 font-semibold pt-1 border-t border-slate-100 dark:border-slate-800 font-mono">
+              <span>Abon. : {overallStats.totalSubscriptionRevenue.toLocaleString("fr-FR")} F</span>
+              <span>Séances : {overallStats.totalSessionRevenue.toLocaleString("fr-FR")} F</span>
+            </div>
           </div>
         </div>
 
@@ -2722,7 +3299,7 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
             Indicateurs Détaillés de la Salle de Sport
           </h3>
           <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">
-            Indicateurs détaillés de votre établissement avec répartition des adhésions actives et des estimations mensuelles.
+            Indicateurs détaillés de votre établissement avec répartition des abonnements, des séances et des totaux généraux.
           </p>
         </div>
 
@@ -2732,15 +3309,16 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
               <tr className="border-b border-slate-150 dark:border-slate-800 text-[10px] uppercase font-bold text-slate-400 tracking-wider">
                 <th className="pb-3 pl-2">Salle de Sport</th>
                 <th className="pb-3 text-center">Adhérents Actifs</th>
-                <th className="pb-3 text-center">Suspendus</th>
-                <th className="pb-3 text-center">Expirés</th>
-                <th className="pb-3 text-right">Revenus Mensuels Estimés</th>
-                <th className="pb-3 pr-2 text-right w-48">Part de Revenu</th>
+                <th className="pb-3 text-center">Expirés / Susp.</th>
+                <th className="pb-3 text-right">Abonnements</th>
+                <th className="pb-3 text-right">Séances Uniques</th>
+                <th className="pb-3 text-right font-bold text-slate-800 dark:text-slate-100">Total Général</th>
+                <th className="pb-3 pr-2 text-right w-40">Part de Revenu</th>
               </tr>
             </thead>
             <tbody>
               {statsPerGym.map((g) => {
-                const percent = overallStats.totalRevenue > 0 ? (g.estimatedRevenue / overallStats.totalRevenue) * 100 : 0;
+                const percent = overallStats.totalRevenue > 0 ? (g.totalRevenue / overallStats.totalRevenue) * 100 : 0;
                 return (
                   <tr key={g.id} className="border-b border-slate-100 dark:border-slate-800/60 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-50/50 dark:hover:bg-slate-850/40 transition-colors">
                     <td className="py-4 pl-2 font-medium text-slate-900 dark:text-slate-100 flex items-center gap-3">
@@ -2762,18 +3340,21 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
                       </span>
                     </td>
                     <td className="py-4 text-center font-mono font-medium text-slate-500 dark:text-slate-400">
-                      {g.suspendedCount}
+                      {g.suspendedCount + g.expiredCount}
                     </td>
-                    <td className="py-4 text-center font-mono font-medium text-slate-500 dark:text-slate-400">
-                      {g.expiredCount}
+                    <td className="py-4 text-right font-mono font-medium text-slate-600 dark:text-slate-300">
+                      {g.estimatedRevenue.toLocaleString("fr-FR")} FCFA
+                    </td>
+                    <td className="py-4 text-right font-mono font-medium text-blue-600 dark:text-blue-400">
+                      {g.sessionsRevenue.toLocaleString("fr-FR")} FCFA
                     </td>
                     <td className="py-4 text-right font-bold text-slate-800 dark:text-slate-100 font-mono">
-                      {g.estimatedRevenue.toLocaleString("fr-FR")} FCFA
+                      {g.totalRevenue.toLocaleString("fr-FR")} FCFA
                     </td>
                     <td className="py-4 pr-2 text-right">
                       <div className="flex items-center gap-2 justify-end">
                         <span className="font-mono text-[10px] font-bold text-slate-500 dark:text-slate-400">{percent.toFixed(1)}%</span>
-                        <div className="w-24 bg-slate-100 dark:bg-slate-950 rounded-full h-1.5 overflow-hidden border border-slate-200 dark:border-slate-800">
+                        <div className="w-20 bg-slate-100 dark:bg-slate-950 rounded-full h-1.5 overflow-hidden border border-slate-200 dark:border-slate-800">
                           <div
                             className="h-1.5 rounded-full transition-all"
                             style={{ width: `${percent}%`, backgroundColor: g.primaryColor }}
