@@ -54,7 +54,14 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
   });
 
   // UI Active Tab
-  const [activeTab, setActiveTab] = useState<"gyms" | "sanity" | "logs" | "reports">("gyms");
+  const [activeTab, setActiveTab] = useState<"gyms" | "sanity" | "logs" | "reports">(() => {
+    try {
+      const cached = localStorage.getItem("adminActiveTab") as any;
+      return ["gyms", "sanity", "logs", "reports"].includes(cached) ? cached : "gyms";
+    } catch {
+      return "gyms";
+    }
+  });
 
   // One-time sessions global state
   const [oneTimeSessions, setOneTimeSessions] = useState<OneTimeSession[]>([]);
@@ -124,6 +131,10 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("adminActiveTab", activeTab);
+  }, [activeTab]);
 
   const showToast = (text: string, type: "success" | "error" | "info") => {
     setMessage({ text, type });

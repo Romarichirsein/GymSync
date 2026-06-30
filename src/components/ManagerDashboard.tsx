@@ -152,7 +152,14 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
   });
 
   // Manager Custom Settings States
-  const [activeView, setActiveView] = useState<"members" | "sessions" | "stats" | "config" | "logs">("members");
+  const [activeView, setActiveView] = useState<"members" | "sessions" | "stats" | "config" | "logs">(() => {
+    try {
+      const cached = localStorage.getItem(`activeView_${gymId}`) as any;
+      return ["members", "sessions", "stats", "config", "logs"].includes(cached) ? cached : "members";
+    } catch {
+      return "members";
+    }
+  });
   const [managerLogs, setManagerLogs] = useState<any[]>([]);
 
   // One-time session form states
@@ -339,6 +346,10 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
       document.documentElement.classList.remove("dark");
     };
   }, [darkMode]);
+
+  useEffect(() => {
+    localStorage.setItem(`activeView_${gymId}`, activeView);
+  }, [activeView, gymId]);
 
   // Network connection listeners for instant feedback & sync
   useEffect(() => {
