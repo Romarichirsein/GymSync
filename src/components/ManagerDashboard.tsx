@@ -2035,9 +2035,9 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
             })()}
 
             {/* 2. Real-Time Admin Alerts Center (unreads list) */}
-            {notifications.filter(n => !n.read).length > 0 && (
+            {notifications.filter(n => !n.isRead).length > 0 && (
               <div className="space-y-3">
-                {notifications.filter(n => !n.read).map((notif) => (
+                {notifications.filter(n => !n.isRead).map((notif) => (
                   <div 
                     key={notif.id} 
                     className={`border rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition-all ${
