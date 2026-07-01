@@ -12,6 +12,17 @@ export default function App() {
     return localStorage.getItem("activeGymId") || undefined;
   });
 
+  // Track sub-tabs and sub-views to keep them in URL
+  const [adminTab, setAdminTab] = useState<"gyms" | "sanity" | "logs" | "reports">((() => {
+    const cached = localStorage.getItem("adminActiveTab") as any;
+    return ["gyms", "sanity", "logs", "reports"].includes(cached) ? cached : "gyms";
+  }));
+  const [managerView, setManagerView] = useState<"members" | "sessions" | "stats" | "config" | "logs">((() => {
+    const activeGymId = localStorage.getItem("activeGymId");
+    const cached = localStorage.getItem(`activeView_${activeGymId}`) as any;
+    return ["members", "sessions", "stats", "config", "logs"].includes(cached) ? cached : "members";
+  }));
+
   // Keep state synchronized with hash URL routing and vice versa
   useEffect(() => {
     const handleHashChange = () => {
@@ -19,23 +30,47 @@ export default function App() {
       const storedRole = localStorage.getItem("userRole") as "admin" | "manager" | null;
       const storedGymId = localStorage.getItem("activeGymId") || undefined;
 
-      if (hash === "#/admin" && storedRole === "admin") {
+      if (hash.startsWith("#/admin")) {
+        if (storedRole !== "admin") {
+          window.location.hash = "#/login";
+          return;
+        }
         setUserRole("admin");
         setActiveGymId(undefined);
-      } else if (hash.startsWith("#/manager/") && storedRole === "manager") {
-        const gymId = hash.replace("#/manager/", "");
+        
+        // Parse sub-tab
+        const parts = hash.split("/");
+        const tab = parts[2] as "gyms" | "sanity" | "logs" | "reports";
+        if (["gyms", "sanity", "logs", "reports"].includes(tab)) {
+          setAdminTab(tab);
+        } else {
+          window.location.hash = `#/admin/${adminTab}`;
+        }
+      } else if (hash.startsWith("#/manager/")) {
+        if (storedRole !== "manager") {
+          window.location.hash = "#/login";
+          return;
+        }
+        const parts = hash.split("/");
+        const gymId = parts[2];
+        const view = parts[3] as "members" | "sessions" | "stats" | "config" | "logs";
+
         if (gymId && gymId === storedGymId) {
           setUserRole("manager");
           setActiveGymId(gymId);
+          if (["members", "sessions", "stats", "config", "logs"].includes(view)) {
+            setManagerView(view);
+          } else {
+            window.location.hash = `#/manager/${gymId}/${managerView}`;
+          }
         } else {
-          // If the user tries to load a different gym they are not logged into, redirect them
-          window.location.hash = storedGymId ? `#/manager/${storedGymId}` : "#/login";
+          window.location.hash = storedGymId ? `#/manager/${storedGymId}/${managerView}` : "#/login";
         }
       } else if (hash === "#/login" || !hash) {
         if (storedRole === "admin") {
-          window.location.hash = "#/admin";
+          window.location.hash = `#/admin/${adminTab}`;
         } else if (storedRole === "manager" && storedGymId) {
-          window.location.hash = `#/manager/${storedGymId}`;
+          window.location.hash = `#/manager/${storedGymId}/${managerView}`;
         } else {
           setUserRole(null);
           setActiveGymId(undefined);
@@ -44,9 +79,9 @@ export default function App() {
       } else {
         // Fallback for unauthorized route changes
         if (storedRole === "admin") {
-          window.location.hash = "#/admin";
+          window.location.hash = `#/admin/${adminTab}`;
         } else if (storedRole === "manager" && storedGymId) {
-          window.location.hash = `#/manager/${storedGymId}`;
+          window.location.hash = `#/manager/${storedGymId}/${managerView}`;
         } else {
           window.location.hash = "#/login";
         }
@@ -59,7 +94,7 @@ export default function App() {
     return () => {
       window.removeEventListener("hashchange", handleHashChange);
     };
-  }, []);
+  }, [adminTab, managerView]);
 
   const handleSelectRole = (role: "admin" | "manager", gymId?: string) => {
     localStorage.setItem("userRole", role);
@@ -72,11 +107,12 @@ export default function App() {
     setUserRole(role);
     setActiveGymId(gymId);
 
-    // Sync browser hash routing
+    // Sync browser hash routing with sub-routes
     if (role === "admin") {
-      window.location.hash = "#/admin";
+      window.location.hash = `#/admin/${adminTab}`;
     } else if (role === "manager" && gymId) {
-      window.location.hash = `#/manager/${gymId}`;
+      const savedView = localStorage.getItem(`activeView_${gymId}`) || "members";
+      window.location.hash = `#/manager/${gymId}/${savedView}`;
     }
   };
 
@@ -88,6 +124,26 @@ export default function App() {
     window.location.hash = "#/login";
   };
 
+  const handleTabChange = (tab: "gyms" | "sanity" | "logs" | "reports") => {
+    setAdminTab(tab);
+    localStorage.setItem("adminActiveTab", tab);
+    const targetHash = `#/admin/${tab}`;
+    if (window.location.hash !== targetHash) {
+      window.location.hash = targetHash;
+    }
+  };
+
+  const handleViewChange = (view: "members" | "sessions" | "stats" | "config" | "logs") => {
+    setManagerView(view);
+    if (activeGymId) {
+      localStorage.setItem(`activeView_${activeGymId}`, view);
+      const targetHash = `#/manager/${activeGymId}/${view}`;
+      if (window.location.hash !== targetHash) {
+        window.location.hash = targetHash;
+      }
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-900 selection:bg-purple-500 selection:text-white">
       {userRole === null && (
@@ -95,11 +151,20 @@ export default function App() {
       )}
 
       {userRole === "admin" && (
-        <AdminDashboard onLogout={handleLogout} />
+        <AdminDashboard 
+          onLogout={handleLogout} 
+          activeTabProp={adminTab}
+          onTabChangeProp={handleTabChange}
+        />
       )}
 
       {userRole === "manager" && activeGymId && (
-        <ManagerDashboard gymId={activeGymId} onBack={handleLogout} />
+        <ManagerDashboard 
+          gymId={activeGymId} 
+          onBack={handleLogout} 
+          activeViewProp={managerView}
+          onViewChangeProp={handleViewChange}
+        />
       )}
     </div>
   );

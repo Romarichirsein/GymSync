@@ -39,9 +39,15 @@ import { motion } from "motion/react";
 
 interface AdminDashboardProps {
   onLogout: () => void;
+  activeTabProp?: "gyms" | "sanity" | "logs" | "reports";
+  onTabChangeProp?: (tab: "gyms" | "sanity" | "logs" | "reports") => void;
 }
 
-export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
+export default function AdminDashboard({ 
+  onLogout,
+  activeTabProp,
+  onTabChangeProp
+}: AdminDashboardProps) {
   // Data State
   const [gyms, setGyms] = useState<Gym[]>([]);
   const [alertLogs, setAlertLogs] = useState<AlertLog[]>([]);
@@ -134,7 +140,16 @@ export default function AdminDashboard({ onLogout }: AdminDashboardProps) {
 
   useEffect(() => {
     localStorage.setItem("adminActiveTab", activeTab);
-  }, [activeTab]);
+    if (onTabChangeProp) {
+      onTabChangeProp(activeTab);
+    }
+  }, [activeTab, onTabChangeProp]);
+
+  useEffect(() => {
+    if (activeTabProp) {
+      setActiveTab(activeTabProp);
+    }
+  }, [activeTabProp]);
 
   const showToast = (text: string, type: "success" | "error" | "info") => {
     setMessage({ text, type });

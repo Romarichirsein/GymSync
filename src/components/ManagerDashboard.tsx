@@ -58,9 +58,16 @@ import {
 interface ManagerDashboardProps {
   gymId: string;
   onBack: () => void;
+  activeViewProp?: "members" | "sessions" | "stats" | "config" | "logs";
+  onViewChangeProp?: (view: "members" | "sessions" | "stats" | "config" | "logs") => void;
 }
 
-export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProps) {
+export default function ManagerDashboard({ 
+  gymId, 
+  onBack,
+  activeViewProp,
+  onViewChangeProp
+}: ManagerDashboardProps) {
   // Offline State
   const [isOffline, setIsOffline] = useState<boolean>(() => typeof navigator !== "undefined" ? !navigator.onLine : false);
 
@@ -349,7 +356,16 @@ export default function ManagerDashboard({ gymId, onBack }: ManagerDashboardProp
 
   useEffect(() => {
     localStorage.setItem(`activeView_${gymId}`, activeView);
-  }, [activeView, gymId]);
+    if (onViewChangeProp) {
+      onViewChangeProp(activeView);
+    }
+  }, [activeView, gymId, onViewChangeProp]);
+
+  useEffect(() => {
+    if (activeViewProp) {
+      setActiveView(activeViewProp);
+    }
+  }, [activeViewProp]);
 
   // Network connection listeners for instant feedback & sync
   useEffect(() => {
