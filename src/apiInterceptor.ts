@@ -606,24 +606,27 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   if (deleteGymMatch && method === "DELETE") {
     const gymId = deleteGymMatch[1];
     const db = getLocalDb();
-    const gymIndex = db.gyms.findIndex((g) => g.id === gymId);
+    
+    const cleanId = (id: string) => id.replace(/^(gym-)+/, "");
+    const gymIndex = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(gymId));
     if (gymIndex === -1) {
       return new Response(JSON.stringify({ success: false, message: "Salle de sport introuvable." }), { status: 404, headers: { "Content-Type": "application/json" } });
     }
 
     const gymName = db.gyms[gymIndex].name;
+    const targetGymId = db.gyms[gymIndex].id;
     
     // Cascading delete
     db.gyms.splice(gymIndex, 1);
-    db.members = db.members.filter((m) => m.gymId !== gymId);
-    db.invoices = db.invoices.filter((inv) => inv.gymId !== gymId);
+    db.members = db.members.filter((m) => cleanId(m.gymId) !== cleanId(targetGymId));
+    db.invoices = db.invoices.filter((inv) => cleanId(inv.gymId) !== cleanId(targetGymId));
     if (db.oneTimeSessions) {
-      db.oneTimeSessions = db.oneTimeSessions.filter((s) => s.gymId !== gymId);
+      db.oneTimeSessions = db.oneTimeSessions.filter((s) => cleanId(s.gymId) !== cleanId(targetGymId));
     }
     if (db.managerLogs) {
-      db.managerLogs = db.managerLogs.filter((l) => l.gymId !== gymId);
+      db.managerLogs = db.managerLogs.filter((l) => cleanId(l.gymId) !== cleanId(targetGymId));
     }
-    db.alertLogs = db.alertLogs.filter((l) => l.gymId !== gymId);
+    db.alertLogs = db.alertLogs.filter((l) => cleanId(l.gymId) !== cleanId(targetGymId));
 
     saveLocalDb(db);
     return new Response(JSON.stringify({ success: true, message: `La salle de sport "${gymName}" et toutes ses données associées ont été supprimées avec succès en mode local.` }), { status: 200, headers: { "Content-Type": "application/json" } });

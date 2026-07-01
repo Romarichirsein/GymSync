@@ -750,27 +750,77 @@ async function startServer() {
   // Delete a gym and all its associated data (Super Admin capability)
   app.delete("/api/gyms/:gymId", async (req, res) => {
     const { gymId } = req.params;
-    const db = readDb();
+    let db = readDb();
     
-    const gymIndex = db.gyms.findIndex((g) => g.id === gymId);
+    const cleanId = (id: string) => id.replace(/^(gym-)+/, "");
+    let gymIndex = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(gymId));
+    
+    // Fail-safe: if not found locally, fetch gyms from Sanity Cloud first to sync cache
+    if (gymIndex === -1 && db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const sanityGyms = await client.fetch<any[]>(`*[_type == "gym"]`);
+          if (sanityGyms && sanityGyms.length > 0) {
+            sanityGyms.forEach((g) => {
+              const parsedGymId = g._id.startsWith("gym-") ? g._id.replace("gym-", "") : g._id;
+              const gymData: Gym = {
+                id: parsedGymId,
+                name: g.name,
+                slug: g.slug,
+                logo: g.logo || "",
+                slogan: g.slogan || "",
+                primaryColor: g.primaryColor,
+                secondaryColor: g.secondaryColor,
+                email: g.email,
+                phone: g.phone,
+                address: g.address,
+                createdAt: g.createdAt,
+                managerEmail: g.managerEmail || "",
+                managerPassword: g.managerPassword || "",
+                subscriptionPlans: g.subscriptionPlans || [],
+                subscriptionEnd: g.subscriptionEnd || "",
+                status: g.status || "active",
+                notifications: g.notifications || []
+              };
+
+              const existingIndex = db.gyms.findIndex((x) => cleanId(x.id) === cleanId(parsedGymId));
+              if (existingIndex > -1) {
+                db.gyms[existingIndex] = { ...db.gyms[existingIndex], ...gymData };
+              } else {
+                db.gyms.push(gymData);
+              }
+            });
+            writeDb(db);
+            // Re-read DB after sync
+            db = readDb();
+            gymIndex = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(gymId));
+          }
+        } catch (err) {
+          console.error("Failed to fetch gyms from Sanity during delete fail-safe:", err);
+        }
+      }
+    }
+
     if (gymIndex === -1) {
       return res.status(404).json({ success: false, message: "Salle de sport introuvable." });
     }
 
     const gymName = db.gyms[gymIndex].name;
+    const targetGymId = db.gyms[gymIndex].id;
 
     // 1. Remove from local DB arrays
     db.gyms.splice(gymIndex, 1);
     
-    db.members = db.members.filter((m) => m.gymId !== gymId);
-    db.invoices = db.invoices.filter((inv) => inv.gymId !== gymId);
+    db.members = db.members.filter((m) => cleanId(m.gymId) !== cleanId(targetGymId));
+    db.invoices = db.invoices.filter((inv) => cleanId(inv.gymId) !== cleanId(targetGymId));
     if (db.oneTimeSessions) {
-      db.oneTimeSessions = db.oneTimeSessions.filter((s) => s.gymId !== gymId);
+      db.oneTimeSessions = db.oneTimeSessions.filter((s) => cleanId(s.gymId) !== cleanId(targetGymId));
     }
     if (db.managerLogs) {
-      db.managerLogs = db.managerLogs.filter((l) => l.gymId !== gymId);
+      db.managerLogs = db.managerLogs.filter((l) => cleanId(l.gymId) !== cleanId(targetGymId));
     }
-    db.alertLogs = db.alertLogs.filter((l) => l.gymId !== gymId);
+    db.alertLogs = db.alertLogs.filter((l) => cleanId(l.gymId) !== cleanId(targetGymId));
 
     writeDb(db);
 
@@ -781,10 +831,11 @@ async function startServer() {
         try {
           // Delete gym document and all documents referencing this gymId
           await client.delete({
-            query: `*[_id == $gymDocId || gymId == $gymId]`,
+            query: `*[_id == $gymDocId || _id == $gymIdClean || gymId == $gymId || gymId == $gymIdClean]`,
             params: { 
-              gymDocId: `gym-${gymId}`, 
-              gymId 
+              gymDocId: `gym-${targetGymId}`, 
+              gymId: targetGymId,
+              gymIdClean: cleanId(targetGymId)
             }
           });
         } catch (err) {
