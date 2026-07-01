@@ -747,6 +747,55 @@ async function startServer() {
     res.json({ success: true, gym });
   });
 
+  // Delete a gym and all its associated data (Super Admin capability)
+  app.delete("/api/gyms/:gymId", async (req, res) => {
+    const { gymId } = req.params;
+    const db = readDb();
+    
+    const gymIndex = db.gyms.findIndex((g) => g.id === gymId);
+    if (gymIndex === -1) {
+      return res.status(404).json({ success: false, message: "Salle de sport introuvable." });
+    }
+
+    const gymName = db.gyms[gymIndex].name;
+
+    // 1. Remove from local DB arrays
+    db.gyms.splice(gymIndex, 1);
+    
+    db.members = db.members.filter((m) => m.gymId !== gymId);
+    db.invoices = db.invoices.filter((inv) => inv.gymId !== gymId);
+    if (db.oneTimeSessions) {
+      db.oneTimeSessions = db.oneTimeSessions.filter((s) => s.gymId !== gymId);
+    }
+    if (db.managerLogs) {
+      db.managerLogs = db.managerLogs.filter((l) => l.gymId !== gymId);
+    }
+    db.alertLogs = db.alertLogs.filter((l) => l.gymId !== gymId);
+
+    writeDb(db);
+
+    // 2. If Sanity is active, delete from Sanity Cloud
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          // Delete gym document and all documents referencing this gymId
+          await client.delete({
+            query: `*[_id == $gymDocId || gymId == $gymId]`,
+            params: { 
+              gymDocId: `gym-${gymId}`, 
+              gymId 
+            }
+          });
+        } catch (err) {
+          console.error("Failed to delete gym and associated data from Sanity:", err);
+        }
+      }
+    }
+
+    res.json({ success: true, message: `La salle de sport "${gymName}" et toutes ses données associées ont été supprimées avec succès.` });
+  });
+
   // Post notification to a specific gym (Super Admin capability)
   app.post("/api/gyms/:gymId/notifications", (req, res) => {
     const { gymId } = req.params;

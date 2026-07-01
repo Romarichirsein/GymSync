@@ -466,6 +466,29 @@ export default function AdminDashboard({
     setIsEditingGym(true);
   };
 
+  const handleDeleteGym = async (gymId: string, gymName: string) => {
+    const confirmed = window.confirm(
+      `Êtes-vous absolument sûr de vouloir supprimer définitivement la salle de sport "${gymName}" ?\n\n` +
+      `⚠️ ATTENTION : Cette action est irréversible. Toutes les données associées (adhérents, factures, reçus, logs) seront définitivement effacées du système local et du Cloud Sanity.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`/api/gyms/${gymId}`, {
+        method: "DELETE",
+      });
+      const data = await response.json();
+      if (response.ok) {
+        showToast(data.message || `La salle de sport "${gymName}" a été supprimée.`, "success");
+        loadData(); // Reload admin dashboard data
+      } else {
+        throw new Error(data.message || "Une erreur est survenue lors de la suppression.");
+      }
+    } catch (err: any) {
+      showToast(err.message || "Impossible de supprimer la salle.", "error");
+    }
+  };
+
   const handleCreateGymClick = () => {
     setEditingGym({
       name: "",
@@ -821,6 +844,13 @@ export default function AdminDashboard({
                                 >
                                   <Bell className="w-3.5 h-3.5 text-blue-500" />
                                   <span>Abonnement &amp; Alertes</span>
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteGym(gym.id, gym.name)}
+                                  className="text-xs font-semibold text-red-600 hover:text-red-700 hover:bg-red-100/50 flex items-center justify-center p-2.5 bg-red-50/50 border border-red-200 rounded-lg transition-all cursor-pointer shadow-sm select-none"
+                                  title="Supprimer la salle de sport"
+                                >
+                                  <Trash2 className="w-4 h-4 text-red-500" />
                                 </button>
                               </div>
                             </div>
