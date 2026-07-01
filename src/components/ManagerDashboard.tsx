@@ -167,7 +167,14 @@ export default function ManagerDashboard({
       return "members";
     }
   });
-  const [managerLogs, setManagerLogs] = useState<any[]>([]);
+  const [managerLogs, setManagerLogs] = useState<any[]>(() => {
+    try {
+      const cached = localStorage.getItem(`managerLogs_${gymId}`);
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
 
   // One-time session form states
   const [sessName, setSessName] = useState("");
@@ -190,6 +197,7 @@ export default function ManagerDashboard({
       if (res.ok) {
         const data = await res.json();
         setManagerLogs(data);
+        localStorage.setItem(`managerLogs_${gymId}`, JSON.stringify(data));
       }
     } catch (err) {
       console.error("Error loading manager logs", err);
@@ -518,9 +526,10 @@ export default function ManagerDashboard({
       fetch("/api/members").then((res) => res.json()),
       fetch("/api/alerts/expiring").then((res) => res.json()),
       fetch(`/api/gyms/${gymId}/notifications`).then((res) => res.json()),
-      fetch(`/api/gyms/${gymId}/one-time-sessions`).then((res) => res.json())
+      fetch(`/api/gyms/${gymId}/one-time-sessions`).then((res) => res.json()),
+      fetch(`/api/gyms/${gymId}/manager-logs`).then((res) => res.json()).catch(() => [])
     ])
-      .then(([membersList, allMembersList, expiringList, notificationsList, sessionsList]) => {
+      .then(([membersList, allMembersList, expiringList, notificationsList, sessionsList, logsList]) => {
         setMembers(membersList);
         localStorage.setItem(`members_${gymId}`, JSON.stringify(membersList));
 
@@ -542,6 +551,11 @@ export default function ManagerDashboard({
         if (Array.isArray(notificationsList)) {
           setNotifications(notificationsList);
           localStorage.setItem(`notifications_${gymId}`, JSON.stringify(notificationsList));
+        }
+
+        if (Array.isArray(logsList)) {
+          setManagerLogs(logsList);
+          localStorage.setItem(`managerLogs_${gymId}`, JSON.stringify(logsList));
         }
         setLoading(false);
       })
@@ -3745,16 +3759,17 @@ export default function ManagerDashboard({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-150 dark:divide-slate-800 text-xs text-slate-700 dark:text-slate-300">
-                  {filteredLogs.map((log) => {
+                  {filteredLogs.map((log: any) => {
                     // Determine badge colors based on action type
                     let badgeStyles = "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300";
-                    if (log.action.includes("Inscription")) {
+                    const actionStr = log.action || "";
+                    if (actionStr.includes("Inscription")) {
                       badgeStyles = "bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/30 font-bold";
-                    } else if (log.action.includes("Facture") || log.action.includes("Génération")) {
+                    } else if (actionStr.includes("Facture") || actionStr.includes("Génération")) {
                       badgeStyles = "bg-indigo-50 dark:bg-indigo-950/20 text-indigo-700 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/30 font-bold";
-                    } else if (log.action.includes("Modification")) {
+                    } else if (actionStr.includes("Modification")) {
                       badgeStyles = "bg-amber-50 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400 border border-amber-100 dark:border-amber-900/30 font-bold";
-                    } else if (log.action.includes("Suppression")) {
+                    } else if (actionStr.includes("Suppression")) {
                       badgeStyles = "bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-100 dark:border-rose-900/30 font-bold";
                     }
 

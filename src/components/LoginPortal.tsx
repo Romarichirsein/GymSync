@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { ShieldCheck, Dumbbell, ArrowRight, Sparkles, Lock, Mail, AlertCircle, Info, ChevronDown, ChevronUp } from "lucide-react";
+import { ShieldCheck, Dumbbell, ArrowRight, Sparkles, Lock, Mail, AlertCircle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { Gym } from "../types";
 
@@ -12,7 +12,6 @@ export default function LoginPortal({ onSelectRole }: LoginPortalProps) {
   const [password, setPassword] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
-  const [showDemoAccs, setShowDemoAccs] = useState<boolean>(false);
   const [gyms, setGyms] = useState<Gym[]>([]);
 
   useEffect(() => {
@@ -194,50 +193,7 @@ export default function LoginPortal({ onSelectRole }: LoginPortalProps) {
             </button>
           </form>
 
-          {/* Demo account helper collapsing section */}
-          <div className="border-t border-slate-100 pt-4">
-            <button
-              type="button"
-              onClick={() => setShowDemoAccs(!showDemoAccs)}
-              className="w-full flex items-center justify-between text-[11px] text-slate-500 hover:text-blue-600 font-bold transition-colors uppercase tracking-wider"
-            >
-              <span className="flex items-center gap-1.5">
-                <Info className="w-3.5 h-3.5" />
-                Identifiants de démonstration
-              </span>
-              {showDemoAccs ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-            </button>
 
-            <AnimatePresence>
-              {showDemoAccs && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden mt-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2"
-                >
-                  <div>
-                    <span className="font-bold text-slate-800 block text-[10px] uppercase">Administrateur Système :</span>
-                    <code className="font-mono bg-white border border-slate-200 px-1 py-0.5 rounded text-[11px]">admin@gymsync.com</code> / <code className="font-mono bg-white border border-slate-200 px-1 py-0.5 rounded text-[11px]">admin123</code>
-                  </div>
-                  <div className="border-t border-slate-200 pt-2">
-                    <span className="font-bold text-slate-800 block text-[10px] uppercase">Gérants de salle (Préréglés) :</span>
-                    <div className="space-y-1 mt-1">
-                      <div>
-                        Club FitZone: <code className="font-mono bg-white border border-slate-200 px-1 py-0.5 rounded text-[11px]">manager@fitzone.com</code> / <code className="font-mono bg-white border border-slate-200 px-1 py-0.5 rounded text-[11px]">password123</code>
-                      </div>
-                      <div>
-                        Club Zen: <code className="font-mono bg-white border border-slate-200 px-1 py-0.5 rounded text-[11px]">manager@zen.com</code> / <code className="font-mono bg-white border border-slate-200 px-1 py-0.5 rounded text-[11px]">password123</code>
-                      </div>
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                    Note : Les gérants créés par le Super Admin sur l'interface d'administration système s'y connecteront directement par la suite avec leurs identifiants personnalisés !
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
         </motion.div>
       </div>
 
