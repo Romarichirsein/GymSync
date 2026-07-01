@@ -208,6 +208,11 @@ function saveLocalDb(db: DB) {
   localStorage.setItem(DB_KEY, JSON.stringify(db));
 }
 
+function cleanId(id: string | undefined | null): string {
+  if (!id) return "";
+  return id.replace(/^(gym-mem-|mem-gym-|gym-|mem-|inv-|session-|managerlog-|mlog-)+/, "");
+}
+
 function localCheckSubscriptionStatus(db: DB): boolean {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -340,10 +345,30 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   // 3. POST /api/gyms
   if (path === "/api/gyms" && method === "POST") {
     const db = getLocalDb();
+    const gymData = bodyData as Gym;
+    const existingIndex = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(gymData.id));
+    if (existingIndex > -1) {
+      db.gyms[existingIndex] = { ...db.gyms[existingIndex], ...gymData };
+      
+      // Log update activity
+      db.managerLogs = db.managerLogs || [];
+      db.managerLogs.unshift({
+        id: `mlog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        gymId: cleanId(gymData.id),
+        action: "Configuration de la salle",
+        details: "Mise à jour des paramètres du club (couleurs, forfaits, logo, coordonnées)",
+        createdAt: new Date().toISOString()
+      });
+      
+      saveLocalDb(db);
+      return new Response(JSON.stringify({ success: true, gym: db.gyms[existingIndex] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+
     const newGym: Gym = {
-      ...bodyData,
-      id: `gym-${Date.now()}`,
+      ...gymData,
+      id: gymData.id || `gym-${Date.now()}`,
       createdAt: new Date().toISOString(),
+      status: "active",
       notifications: []
     };
     db.gyms.push(newGym);
@@ -357,7 +382,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     const gymId = statusMatch[1];
     const { status, subscriptionEnd, reason } = bodyData || {};
     const db = getLocalDb();
-    const gym = db.gyms.find((g) => g.id === gymId);
+    const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     if (!gym) {
       return new Response(JSON.stringify({ success: false, message: "Salle de sport introuvable." }), { status: 404, headers: { "Content-Type": "application/json" } });
     }
@@ -395,7 +420,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   if (notificationsMatch && method === "GET") {
     const gymId = notificationsMatch[1];
     const db = getLocalDb();
-    const gym = db.gyms.find((g) => g.id === gymId);
+    const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     return new Response(JSON.stringify(gym?.notifications || []), { status: 200, headers: { "Content-Type": "application/json" } });
   }
 
@@ -405,7 +430,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     const gymId = notifReadMatch[1];
     const notifId = notifReadMatch[2];
     const db = getLocalDb();
-    const gym = db.gyms.find((g) => g.id === gymId);
+    const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     if (gym && gym.notifications) {
       const notif = gym.notifications.find((n: any) => n.id === notifId);
       if (notif) {
@@ -427,7 +452,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   if (gymMembersMatch && method === "GET") {
     const gymId = gymMembersMatch[1];
     const db = getLocalDb();
-    const gymMembers = db.members.filter((m) => m.gymId === gymId);
+    const gymMembers = db.members.filter((m) => cleanId(m.gymId) === cleanId(gymId));
     return new Response(JSON.stringify(gymMembers), { status: 200, headers: { "Content-Type": "application/json" } });
   }
 
@@ -435,6 +460,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   if (path === "/api/members" && method === "POST") {
     const db = getLocalDb();
     const memberData = bodyData as Member;
+    memberData.gymId = cleanId(memberData.gymId);
     let member: Member;
     if (memberData.id) {
       // Update
@@ -448,7 +474,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     } else {
       // Create
       const gymId = memberData.gymId;
-      const count = db.members.filter((m) => m.gymId === gymId).length;
+      const count = db.members.filter((m) => cleanId(m.gymId) === cleanId(gymId)).length;
       const regNum = `ADH-${new Date().getFullYear()}-${String(count + 1).padStart(4, "0")}`;
       member = {
         ...memberData,
@@ -484,7 +510,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   if (gymInvoicesMatch && method === "GET") {
     const gymId = gymInvoicesMatch[1];
     const db = getLocalDb();
-    const gymInvoices = db.invoices.filter((i) => i.gymId === gymId);
+    const gymInvoices = db.invoices.filter((i) => cleanId(i.gymId) === cleanId(gymId));
     return new Response(JSON.stringify(gymInvoices), { status: 200, headers: { "Content-Type": "application/json" } });
   }
 
@@ -492,6 +518,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   if (path === "/api/invoices" && method === "POST") {
     const db = getLocalDb();
     const invoiceData = bodyData as Invoice;
+    invoiceData.gymId = cleanId(invoiceData.gymId);
     let invoice: Invoice;
     if (invoiceData.id) {
       const idx = db.invoices.findIndex((i) => i.id === invoiceData.id);
@@ -535,7 +562,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     const { memberId, gymId, daysRemaining } = bodyData || {};
     const db = getLocalDb();
     const member = db.members.find((m) => m.id === memberId);
-    const gym = db.gyms.find((g) => g.id === gymId);
+    const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     if (!member || !gym) {
       return new Response(JSON.stringify({ error: "Adhérent ou Salle introuvable" }), { status: 404, headers: { "Content-Type": "application/json" } });
     }
@@ -549,7 +576,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     const { memberId, gymId, customMessage } = bodyData || {};
     const db = getLocalDb();
     const member = db.members.find((m) => m.id === memberId);
-    const gym = db.gyms.find((g) => g.id === gymId);
+    const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     if (!member || !gym) {
       return new Response(JSON.stringify({ error: "Adhérent ou Salle introuvable" }), { status: 404, headers: { "Content-Type": "application/json" } });
     }
@@ -643,14 +670,14 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   if (getSessionsMatch && method === "GET") {
     const gymId = getSessionsMatch[1];
     const db = getLocalDb();
-    const sessions = (db.oneTimeSessions || []).filter((s) => s.gymId === gymId);
+    const sessions = (db.oneTimeSessions || []).filter((s) => cleanId(s.gymId) === cleanId(gymId));
     return new Response(JSON.stringify(sessions), { status: 200, headers: { "Content-Type": "application/json" } });
   }
 
-  // 24. POST /api/one-time-sessions
   if (path === "/api/one-time-sessions" && method === "POST") {
     const db = getLocalDb();
     const sessionData = bodyData || {};
+    sessionData.gymId = cleanId(sessionData.gymId);
     sessionData.id = sessionData.id || `session-${Date.now()}`;
     sessionData.createdAt = sessionData.createdAt || new Date().toISOString();
     sessionData.date = sessionData.date || new Date().toISOString().split("T")[0];
@@ -661,7 +688,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     db.managerLogs = db.managerLogs || [];
     db.managerLogs.unshift({
       id: `mlog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      gymId: sessionData.gymId,
+      gymId: cleanId(sessionData.gymId),
       action: "Séance unique enregistrée",
       details: `Entrée enregistrée pour ${sessionData.visitorName} d'un montant de ${sessionData.amount.toLocaleString('fr-FR')} FCFA (${sessionData.paymentMethod})`,
       createdAt: new Date().toISOString()
@@ -685,7 +712,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
       db.managerLogs = db.managerLogs || [];
       db.managerLogs.unshift({
         id: `mlog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        gymId: sess.gymId,
+        gymId: cleanId(sess.gymId),
         action: "Séance unique annulée",
         details: `Entrée de ${sess.visitorName} d'un montant de ${sess.amount.toLocaleString('fr-FR')} FCFA a été supprimée/annulée`,
         createdAt: new Date().toISOString()
@@ -695,6 +722,27 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
       return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     }
     return new Response(JSON.stringify({ success: false, message: "Séance introuvable." }), { status: 404, headers: { "Content-Type": "application/json" } });
+  }
+
+  // 26. GET /api/gyms/:gymId/manager-logs
+  const getLogsMatch = path.match(/^\/api\/gyms\/([^/]+)\/manager-logs$/);
+  if (getLogsMatch && method === "GET") {
+    const gymId = getLogsMatch[1];
+    const db = getLocalDb();
+    const logs = (db.managerLogs || []).filter((l) => cleanId(l.gymId) === cleanId(gymId));
+    return new Response(JSON.stringify(logs), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  // 27. POST /api/gyms/:gymId/manager-logs/clear
+  const clearLogsMatch = path.match(/^\/api\/gyms\/([^/]+)\/manager-logs\/clear$/);
+  if (clearLogsMatch && method === "POST") {
+    const gymId = clearLogsMatch[1];
+    const db = getLocalDb();
+    if (db.managerLogs) {
+      db.managerLogs = db.managerLogs.filter((l) => cleanId(l.gymId) !== cleanId(gymId));
+    }
+    saveLocalDb(db);
+    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
 
   return new Response(JSON.stringify({ success: false, message: "Route inconnue en mode local." }), { status: 404, headers: { "Content-Type": "application/json" } });

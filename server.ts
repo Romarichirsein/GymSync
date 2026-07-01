@@ -248,13 +248,19 @@ function writeDb(data: Schema) {
   }
 }
 
+function cleanId(id: string | undefined | null): string {
+  if (!id) return "";
+  return id.replace(/^(gym-mem-|mem-gym-|gym-|mem-|inv-|session-|managerlog-|mlog-)+/, "");
+}
+
 function addManagerLog(db: Schema, gymId: string, action: string, details: string) {
   if (!db.managerLogs) {
     db.managerLogs = [];
   }
+  const targetGymId = cleanId(gymId);
   const newLog: ManagerLog = {
     id: `mlog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    gymId,
+    gymId: targetGymId,
     action,
     details,
     createdAt: new Date().toISOString()
@@ -671,10 +677,10 @@ async function startServer() {
 
   // Update status or subscription end of a gym (Super Admin capability)
   app.post("/api/gyms/:gymId/status", async (req, res) => {
-    const { gymId } = req.params;
-    const { status, subscriptionEnd, reason } = req.body;
-    const db = readDb();
-    const gym = db.gyms.find((g) => g.id === gymId);
+     const { gymId } = req.params;
+     const { status, subscriptionEnd, reason } = req.body;
+     const db = readDb();
+     const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     if (!gym) {
       return res.status(404).json({ success: false, message: "Salle de sport introuvable." });
     }
@@ -855,7 +861,7 @@ async function startServer() {
       return res.status(400).json({ success: false, message: "Le titre et le message de la notification sont requis." });
     }
     const db = readDb();
-    const gym = db.gyms.find((g) => g.id === gymId);
+    const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     if (!gym) {
       return res.status(404).json({ success: false, message: "Salle de sport introuvable." });
     }
@@ -881,7 +887,7 @@ async function startServer() {
   app.get("/api/gyms/:gymId/notifications", (req, res) => {
     const { gymId } = req.params;
     const db = readDb();
-    const gym = db.gyms.find((g) => g.id === gymId);
+    const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     if (!gym) {
       return res.status(404).json({ success: false, message: "Salle de sport introuvable." });
     }
@@ -892,7 +898,7 @@ async function startServer() {
   app.post("/api/gyms/:gymId/notifications/:notifId/read", (req, res) => {
     const { gymId, notifId } = req.params;
     const db = readDb();
-    const gym = db.gyms.find((g) => g.id === gymId);
+    const gym = db.gyms.find((g) => cleanId(g.id) === cleanId(gymId));
     if (!gym) {
       return res.status(404).json({ success: false, message: "Salle de sport introuvable." });
     }
@@ -910,7 +916,7 @@ async function startServer() {
     const db = readDb();
     const gymData = req.body as Gym;
 
-    const existingIndex = db.gyms.findIndex((g) => g.id === gymData.id);
+    const existingIndex = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(gymData.id));
     if (existingIndex > -1) {
       db.gyms[existingIndex] = { ...db.gyms[existingIndex], ...gymData };
     } else {
@@ -1019,8 +1025,12 @@ async function startServer() {
       if (client) {
         try {
           const sanityMembers = await client.fetch<any[]>(
-            `*[_type == "member" && gymId == $gymId]`,
-            { gymId }
+            `*[_type == "member" && (gymId == $gymId || gymId == $gymIdClean || gymId == $gymIdPrefix)]`,
+            { 
+              gymId,
+              gymIdClean: cleanId(gymId),
+              gymIdPrefix: `gym-${cleanId(gymId)}`
+            }
           );
           if (sanityMembers && sanityMembers.length > 0) {
             const mappedMembers = sanityMembers.map((m) => ({
@@ -1070,13 +1080,14 @@ async function startServer() {
         }
       }
     }
-    const gymMembers = db.members.filter((m) => m.gymId === gymId);
+    const gymMembers = db.members.filter((m) => cleanId(m.gymId) === cleanId(gymId));
     res.json(gymMembers);
   });
 
   app.post("/api/members", async (req, res) => {
     const db = readDb();
     const memData = req.body as Member;
+    memData.gymId = cleanId(memData.gymId);
 
     const existingIndex = db.members.findIndex((m) => m.id === memData.id);
     if (existingIndex > -1) {
@@ -1214,8 +1225,12 @@ async function startServer() {
       if (client) {
         try {
           const sanityInvoices = await client.fetch<any[]>(
-            `*[_type == "invoice" && gymId == $gymId]`,
-            { gymId }
+            `*[_type == "invoice" && (gymId == $gymId || gymId == $gymIdClean || gymId == $gymIdPrefix)]`,
+            { 
+              gymId,
+              gymIdClean: cleanId(gymId),
+              gymIdPrefix: `gym-${cleanId(gymId)}`
+            }
           );
           if (sanityInvoices && sanityInvoices.length > 0) {
             const mappedInvoices = sanityInvoices.map((inv) => ({
@@ -1252,13 +1267,14 @@ async function startServer() {
         }
       }
     }
-    const gymInvoices = db.invoices.filter((i) => i.gymId === gymId);
+    const gymInvoices = db.invoices.filter((i) => cleanId(i.gymId) === cleanId(gymId));
     res.json(gymInvoices);
   });
 
   app.post("/api/invoices", async (req, res) => {
     const db = readDb();
     const invoiceData = req.body as Invoice;
+    invoiceData.gymId = cleanId(invoiceData.gymId);
 
     invoiceData.id = invoiceData.id || `inv-${Date.now()}`;
     invoiceData.invoiceNumber = invoiceData.invoiceNumber || `FAC-${Date.now().toString().slice(-6)}`;
@@ -1348,8 +1364,12 @@ async function startServer() {
       if (client) {
         try {
           const sanitySessions = await client.fetch<any[]>(
-            `*[_type == "oneTimeSession" && gymId == $gymId]`,
-            { gymId }
+            `*[_type == "oneTimeSession" && (gymId == $gymId || gymId == $gymIdClean || gymId == $gymIdPrefix)]`,
+            { 
+              gymId,
+              gymIdClean: cleanId(gymId),
+              gymIdPrefix: `gym-${cleanId(gymId)}`
+            }
           );
           if (sanitySessions && sanitySessions.length > 0) {
             const mappedSessions = sanitySessions.map((s) => ({
@@ -1386,13 +1406,14 @@ async function startServer() {
         }
       }
     }
-    const localSessions = (db.oneTimeSessions || []).filter((s) => s.gymId === gymId);
+    const localSessions = (db.oneTimeSessions || []).filter((s) => cleanId(s.gymId) === cleanId(gymId));
     res.json(localSessions);
   });
 
   app.post("/api/one-time-sessions", async (req, res) => {
     const db = readDb();
     const sessionData = req.body as OneTimeSession;
+    sessionData.gymId = cleanId(sessionData.gymId);
 
     sessionData.id = sessionData.id || `session-${Date.now()}`;
     sessionData.createdAt = sessionData.createdAt || new Date().toISOString();
@@ -1653,8 +1674,12 @@ Inclus des détails spécifiques comme son abonnement ("${member.subscriptionTyp
       if (client) {
         try {
           const sanityLogs = await client.fetch<any[]>(
-            `*[_type == "managerLog" && gymId == $gymId] | order(createdAt desc)`,
-            { gymId }
+            `*[_type == "managerLog" && (gymId == $gymId || gymId == $gymIdClean || gymId == $gymIdPrefix)] | order(createdAt desc)`,
+            { 
+              gymId,
+              gymIdClean: cleanId(gymId),
+              gymIdPrefix: `gym-${cleanId(gymId)}`
+            }
           );
           if (sanityLogs && sanityLogs.length > 0) {
             const mappedLogs = sanityLogs.map((l) => ({
@@ -1688,7 +1713,7 @@ Inclus des détails spécifiques comme son abonnement ("${member.subscriptionTyp
       }
     }
 
-    const logs = (db.managerLogs || []).filter((l) => l.gymId === gymId);
+    const logs = (db.managerLogs || []).filter((l) => cleanId(l.gymId) === cleanId(gymId));
     res.json(logs);
   });
 
@@ -1697,7 +1722,7 @@ Inclus des détails spécifiques comme son abonnement ("${member.subscriptionTyp
     const { gymId } = req.params;
     const db = readDb();
     if (db.managerLogs) {
-      db.managerLogs = db.managerLogs.filter((l) => l.gymId !== gymId);
+      db.managerLogs = db.managerLogs.filter((l) => cleanId(l.gymId) !== cleanId(gymId));
     }
     writeDb(db);
 
@@ -1707,8 +1732,12 @@ Inclus des détails spécifiques comme son abonnement ("${member.subscriptionTyp
       if (client) {
         try {
           const logsToDelete = await client.fetch<any[]>(
-            `*[_type == "managerLog" && gymId == $gymId]`,
-            { gymId }
+            `*[_type == "managerLog" && (gymId == $gymId || gymId == $gymIdClean || gymId == $gymIdPrefix)]`,
+            { 
+              gymId,
+              gymIdClean: cleanId(gymId),
+              gymIdPrefix: `gym-${cleanId(gymId)}`
+            }
           );
           for (const log of logsToDelete) {
             await client.delete(log._id);
