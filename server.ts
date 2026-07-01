@@ -569,8 +569,53 @@ async function startServer() {
 
 
   // GYMS Endpoints
-  app.get("/api/gyms", (req, res) => {
+  app.get("/api/gyms", async (req, res) => {
     const db = readDb();
+    
+    // If Sanity is active, warm the local db cache with gyms fetched from Sanity Cloud
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const sanityGyms = await client.fetch<any[]>(`*[_type == "gym"]`);
+          if (sanityGyms && sanityGyms.length > 0) {
+            sanityGyms.forEach((g) => {
+              const gymId = g._id.startsWith("gym-") ? g._id.replace("gym-", "") : g._id;
+              const gymData: Gym = {
+                id: gymId,
+                name: g.name,
+                slug: g.slug,
+                logo: g.logo || "",
+                slogan: g.slogan || "",
+                primaryColor: g.primaryColor,
+                secondaryColor: g.secondaryColor,
+                email: g.email,
+                phone: g.phone,
+                address: g.address,
+                createdAt: g.createdAt,
+                managerEmail: g.managerEmail || "",
+                managerPassword: g.managerPassword || "",
+                subscriptionPlans: g.subscriptionPlans || [],
+                subscriptionEnd: g.subscriptionEnd || "",
+                status: g.status || "active",
+                notifications: g.notifications || []
+              };
+
+              const existingIndex = db.gyms.findIndex((x) => x.id === gymId);
+              if (existingIndex > -1) {
+                db.gyms[existingIndex] = { ...db.gyms[existingIndex], ...gymData };
+              } else {
+                db.gyms.push(gymData);
+              }
+            });
+            writeDb(db);
+          }
+        } catch (err) {
+          console.error("Failed to fetch gyms from Sanity, using local DB cache:", err);
+        }
+      }
+    }
+
     const changed = checkSubscriptionStatus(db);
     if (changed) {
       writeDb(db);
@@ -579,7 +624,7 @@ async function startServer() {
   });
 
   // Update status or subscription end of a gym (Super Admin capability)
-  app.post("/api/gyms/:gymId/status", (req, res) => {
+  app.post("/api/gyms/:gymId/status", async (req, res) => {
     const { gymId } = req.params;
     const { status, subscriptionEnd, reason } = req.body;
     const db = readDb();
@@ -621,6 +666,38 @@ async function startServer() {
     }
 
     writeDb(db);
+
+    // If Sanity is active, sync the updated status and notifications
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          await client.createOrReplace({
+            _type: "gym",
+            _id: `gym-${gym.id}`,
+            name: gym.name,
+            slug: gym.slug,
+            logo: gym.logo || "",
+            slogan: gym.slogan || "",
+            primaryColor: gym.primaryColor,
+            secondaryColor: gym.secondaryColor,
+            email: gym.email,
+            phone: gym.phone,
+            address: gym.address,
+            createdAt: gym.createdAt,
+            managerEmail: gym.managerEmail || "",
+            managerPassword: gym.managerPassword || "",
+            subscriptionPlans: gym.subscriptionPlans || [],
+            subscriptionEnd: gym.subscriptionEnd || "",
+            status: gym.status || "active",
+            notifications: gym.notifications || []
+          });
+        } catch (err) {
+          console.error("Sanity status sync failed", err);
+        }
+      }
+    }
+
     res.json({ success: true, gym });
   });
 
@@ -732,8 +809,59 @@ async function startServer() {
 
 
   // MEMBERS Endpoints
-  app.get("/api/members", (req, res) => {
+  app.get("/api/members", async (req, res) => {
     const db = readDb();
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const sanityMembers = await client.fetch<any[]>(`*[_type == "member"]`);
+          if (sanityMembers && sanityMembers.length > 0) {
+            const mappedMembers = sanityMembers.map((m) => ({
+              id: m._id.startsWith("mem-") ? m._id.replace("mem-", "") : m._id,
+              gymId: m.gymId,
+              name: m.name,
+              email: m.email,
+              phone: m.phone,
+              photo: m.photo || "",
+              subscriptionType: m.subscriptionType,
+              subscriptionStart: m.subscriptionStart,
+              subscriptionEnd: m.subscriptionEnd,
+              status: m.status,
+              registrationNumber: m.registrationNumber,
+              createdAt: m.createdAt,
+              age: m.age || 0,
+              height: m.height || 0,
+              medicalHistory: m.medicalHistory || "",
+              emergencyContactName: m.emergencyContactName || "",
+              emergencyContactPhone: m.emergencyContactPhone || "",
+              neighborhood: m.neighborhood || "",
+              physicalGoals: m.physicalGoals || "",
+              allergies: m.allergies || "",
+              occupation: m.occupation || "",
+              gender: m.gender || "",
+            }));
+
+            let dbChanged = false;
+            for (const item of mappedMembers) {
+              const idx = db.members.findIndex(x => x.id === item.id);
+              if (idx > -1) {
+                db.members[idx] = { ...db.members[idx], ...item };
+              } else {
+                db.members.push(item);
+              }
+              dbChanged = true;
+            }
+            if (dbChanged) {
+              writeDb(db);
+            }
+            return res.json(mappedMembers);
+          }
+        } catch (err) {
+          console.error("Failed to fetch all members from Sanity:", err);
+        }
+      }
+    }
     res.json(db.members);
   });
 
@@ -889,8 +1017,46 @@ async function startServer() {
 
 
   // INVOICES Endpoints
-  app.get("/api/invoices", (req, res) => {
+  app.get("/api/invoices", async (req, res) => {
     const db = readDb();
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const sanityInvoices = await client.fetch<any[]>(`*[_type == "invoice"]`);
+          if (sanityInvoices && sanityInvoices.length > 0) {
+            const mappedInvoices = sanityInvoices.map((inv) => ({
+              id: inv._id.startsWith("inv-") ? inv._id.replace("inv-", "") : inv._id,
+              memberId: inv.memberId,
+              gymId: inv.gymId,
+              invoiceNumber: inv.invoiceNumber,
+              date: inv.date,
+              amount: inv.amount,
+              paymentMethod: inv.paymentMethod,
+              status: inv.status,
+              planName: inv.planName,
+            }));
+
+            let dbChanged = false;
+            for (const item of mappedInvoices) {
+              const idx = db.invoices.findIndex(x => x.id === item.id);
+              if (idx > -1) {
+                db.invoices[idx] = { ...db.invoices[idx], ...item };
+              } else {
+                db.invoices.push(item);
+              }
+              dbChanged = true;
+            }
+            if (dbChanged) {
+              writeDb(db);
+            }
+            return res.json(mappedInvoices);
+          }
+        } catch (err) {
+          console.error("Failed to fetch all invoices from Sanity:", err);
+        }
+      }
+    }
     res.json(db.invoices);
   });
 
@@ -985,8 +1151,46 @@ async function startServer() {
 
 
   // ONE-TIME SESSIONS Endpoints
-  app.get("/api/one-time-sessions", (req, res) => {
+  app.get("/api/one-time-sessions", async (req, res) => {
     const db = readDb();
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const sanitySessions = await client.fetch<any[]>(`*[_type == "oneTimeSession"]`);
+          if (sanitySessions && sanitySessions.length > 0) {
+            const mappedSessions = sanitySessions.map((s) => ({
+              id: s._id.startsWith("session-") ? s._id.replace("session-", "") : s._id,
+              gymId: s.gymId,
+              visitorName: s.visitorName || "Visiteur",
+              visitorPhone: s.visitorPhone || "",
+              amount: s.amount || 0,
+              paymentMethod: s.paymentMethod || "Espèces",
+              date: s.date,
+              createdAt: s.createdAt,
+            }));
+
+            db.oneTimeSessions = db.oneTimeSessions || [];
+            let dbChanged = false;
+            for (const item of mappedSessions) {
+              const idx = db.oneTimeSessions.findIndex(x => x.id === item.id);
+              if (idx > -1) {
+                db.oneTimeSessions[idx] = { ...db.oneTimeSessions[idx], ...item };
+              } else {
+                db.oneTimeSessions.push(item);
+              }
+              dbChanged = true;
+            }
+            if (dbChanged) {
+              writeDb(db);
+            }
+            return res.json(mappedSessions);
+          }
+        } catch (err) {
+          console.error("Failed to fetch all sessions from Sanity:", err);
+        }
+      }
+    }
     res.json(db.oneTimeSessions || []);
   });
 
