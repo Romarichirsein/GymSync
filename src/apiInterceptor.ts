@@ -179,6 +179,8 @@ interface DB {
   invoices: Invoice[];
   alertLogs: AlertLog[];
   sanityConfig: SanityConfig;
+  oneTimeSessions?: OneTimeSession[];
+  managerLogs?: ManagerLog[];
 }
 
 function getLocalDb(): DB {
@@ -189,12 +191,17 @@ function getLocalDb(): DB {
       members: initialMembers,
       invoices: initialInvoices,
       alertLogs: [],
-      sanityConfig: { projectId: "", dataset: "", token: "", useSanity: false }
+      sanityConfig: { projectId: "", dataset: "", token: "", useSanity: false },
+      oneTimeSessions: [],
+      managerLogs: []
     };
     localStorage.setItem(DB_KEY, JSON.stringify(initial));
     return initial;
   }
-  return JSON.parse(data);
+  const parsed = JSON.parse(data) as DB;
+  if (!parsed.oneTimeSessions) parsed.oneTimeSessions = [];
+  if (!parsed.managerLogs) parsed.managerLogs = [];
+  return parsed;
 }
 
 function saveLocalDb(db: DB) {
@@ -592,6 +599,99 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   // 20. POST /api/sanity-config/sync
   if (path === "/api/sanity-config/sync" && method === "POST") {
     return new Response(JSON.stringify({ success: true, count: 0, message: "Synchronisation simulée avec succès en mode local." }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  // 21. DELETE /api/gyms/:gymId
+  const deleteGymMatch = path.match(/^\/api\/gyms\/([^/]+)$/);
+  if (deleteGymMatch && method === "DELETE") {
+    const gymId = deleteGymMatch[1];
+    const db = getLocalDb();
+    const gymIndex = db.gyms.findIndex((g) => g.id === gymId);
+    if (gymIndex === -1) {
+      return new Response(JSON.stringify({ success: false, message: "Salle de sport introuvable." }), { status: 404, headers: { "Content-Type": "application/json" } });
+    }
+
+    const gymName = db.gyms[gymIndex].name;
+    
+    // Cascading delete
+    db.gyms.splice(gymIndex, 1);
+    db.members = db.members.filter((m) => m.gymId !== gymId);
+    db.invoices = db.invoices.filter((inv) => inv.gymId !== gymId);
+    if (db.oneTimeSessions) {
+      db.oneTimeSessions = db.oneTimeSessions.filter((s) => s.gymId !== gymId);
+    }
+    if (db.managerLogs) {
+      db.managerLogs = db.managerLogs.filter((l) => l.gymId !== gymId);
+    }
+    db.alertLogs = db.alertLogs.filter((l) => l.gymId !== gymId);
+
+    saveLocalDb(db);
+    return new Response(JSON.stringify({ success: true, message: `La salle de sport "${gymName}" et toutes ses données associées ont été supprimées avec succès en mode local.` }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  // 22. GET /api/one-time-sessions
+  if (path === "/api/one-time-sessions" && method === "GET") {
+    const db = getLocalDb();
+    return new Response(JSON.stringify(db.oneTimeSessions || []), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  // 23. GET /api/gyms/:gymId/one-time-sessions
+  const getSessionsMatch = path.match(/^\/api\/gyms\/([^/]+)\/one-time-sessions$/);
+  if (getSessionsMatch && method === "GET") {
+    const gymId = getSessionsMatch[1];
+    const db = getLocalDb();
+    const sessions = (db.oneTimeSessions || []).filter((s) => s.gymId === gymId);
+    return new Response(JSON.stringify(sessions), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  // 24. POST /api/one-time-sessions
+  if (path === "/api/one-time-sessions" && method === "POST") {
+    const db = getLocalDb();
+    const sessionData = bodyData || {};
+    sessionData.id = sessionData.id || `session-${Date.now()}`;
+    sessionData.createdAt = sessionData.createdAt || new Date().toISOString();
+    sessionData.date = sessionData.date || new Date().toISOString().split("T")[0];
+
+    db.oneTimeSessions = db.oneTimeSessions || [];
+    db.oneTimeSessions.push(sessionData);
+
+    db.managerLogs = db.managerLogs || [];
+    db.managerLogs.unshift({
+      id: `mlog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      gymId: sessionData.gymId,
+      action: "Séance unique enregistrée",
+      details: `Entrée enregistrée pour ${sessionData.visitorName} d'un montant de ${sessionData.amount.toLocaleString('fr-FR')} FCFA (${sessionData.paymentMethod})`,
+      createdAt: new Date().toISOString()
+    });
+
+    saveLocalDb(db);
+    return new Response(JSON.stringify({ success: true, session: sessionData }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
+  // 25. DELETE /api/one-time-sessions/:id
+  const deleteSessionMatch = path.match(/^\/api\/one-time-sessions\/([^/]+)$/);
+  if (deleteSessionMatch && method === "DELETE") {
+    const sessionId = deleteSessionMatch[1];
+    const db = getLocalDb();
+    db.oneTimeSessions = db.oneTimeSessions || [];
+    const index = db.oneTimeSessions.findIndex((s) => s.id === sessionId);
+    if (index > -1) {
+      const sess = db.oneTimeSessions[index];
+      db.oneTimeSessions.splice(index, 1);
+
+      db.managerLogs = db.managerLogs || [];
+      db.managerLogs.unshift({
+        id: `mlog-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        gymId: sess.gymId,
+        action: "Séance unique annulée",
+        details: `Entrée de ${sess.visitorName} d'un montant de ${sess.amount.toLocaleString('fr-FR')} FCFA a été supprimée/annulée`,
+        createdAt: new Date().toISOString()
+      });
+
+      saveLocalDb(db);
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ success: false, message: "Séance introuvable." }), { status: 404, headers: { "Content-Type": "application/json" } });
   }
 
   return new Response(JSON.stringify({ success: false, message: "Route inconnue en mode local." }), { status: 404, headers: { "Content-Type": "application/json" } });
