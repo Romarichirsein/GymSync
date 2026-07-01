@@ -260,6 +260,21 @@ function addManagerLog(db: Schema, gymId: string, action: string, details: strin
     createdAt: new Date().toISOString()
   };
   db.managerLogs.unshift(newLog);
+
+  // If Sanity is active, sync this log in the background
+  if (db.sanityConfig && db.sanityConfig.useSanity) {
+    const client = getSanityClient(db.sanityConfig);
+    if (client) {
+      client.createOrReplace({
+        _type: "managerLog",
+        _id: `managerlog-${newLog.id}`,
+        gymId: newLog.gymId,
+        action: newLog.action,
+        details: newLog.details,
+        createdAt: newLog.createdAt,
+      }).catch((err) => console.error("Sanity managerLog sync failed", err));
+    }
+  }
 }
 
 // Check subscription and block/notify gyms if necessary
@@ -554,9 +569,40 @@ async function startServer() {
         });
       }
 
+      // 5. Sync Alert Logs
+      const alertsToSync = db.alertLogs || [];
+      for (const alert of alertsToSync) {
+        await client.createOrReplace({
+          _type: "alertLog",
+          _id: `alertlog-${alert.id}`,
+          memberId: alert.memberId,
+          memberName: alert.memberName,
+          gymId: alert.gymId,
+          gymName: alert.gymName,
+          daysRemaining: alert.daysRemaining,
+          alertDate: alert.alertDate,
+          customMessage: alert.customMessage || "",
+          sent: alert.sent,
+          sentAt: alert.sentAt,
+        });
+      }
+
+      // 6. Sync Manager Logs
+      const managerLogsToSync = db.managerLogs || [];
+      for (const mlog of managerLogsToSync) {
+        await client.createOrReplace({
+          _type: "managerLog",
+          _id: `managerlog-${mlog.id}`,
+          gymId: mlog.gymId,
+          action: mlog.action,
+          details: mlog.details,
+          createdAt: mlog.createdAt,
+        });
+      }
+
       res.json({
         success: true,
-        message: `Synchronisation terminée ! ${db.gyms.length} salles, ${db.members.length} adhérents, ${db.invoices.length} factures et ${sessionsToSync.length} séances uniques envoyés sur le Cloud Sanity.`,
+        message: `Synchronisation terminée ! ${db.gyms.length} salles, ${db.members.length} adhérents, ${db.invoices.length} factures, ${sessionsToSync.length} séances uniques, ${alertsToSync.length} alertes et ${managerLogsToSync.length} logs d'activité envoyés sur le Cloud Sanity.`,
       });
     } catch (err: any) {
       console.error("Sanity Sync Failed:", err);
@@ -1406,7 +1452,7 @@ Inclus des détails spécifiques comme son abonnement ("${member.subscriptionTyp
   });
 
   // Dispatch / log alert sent
-  app.post("/api/alerts/dispatch", (req, res) => {
+  app.post("/api/alerts/dispatch", async (req, res) => {
     const { memberId, gymId, customMessage } = req.body;
     const db = readDb();
 
@@ -1437,30 +1483,142 @@ Inclus des détails spécifiques comme son abonnement ("${member.subscriptionTyp
     db.alertLogs.unshift(newLog);
     writeDb(db);
 
+    // If Sanity is active, sync alert log
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          await client.createOrReplace({
+            _type: "alertLog",
+            _id: `alertlog-${newLog.id}`,
+            memberId: newLog.memberId,
+            memberName: newLog.memberName,
+            gymId: newLog.gymId,
+            gymName: newLog.gymName,
+            daysRemaining: newLog.daysRemaining,
+            alertDate: newLog.alertDate,
+            customMessage: newLog.customMessage || "",
+            sent: newLog.sent,
+            sentAt: newLog.sentAt,
+          });
+        } catch (err) {
+          console.error("Sanity alertLog sync failed", err);
+        }
+      }
+    }
+
     res.json({ success: true, log: newLog });
   });
 
-  app.get("/api/alerts/logs", (req, res) => {
+  app.get("/api/alerts/logs", async (req, res) => {
     const db = readDb();
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const sanityAlertLogs = await client.fetch<any[]>(`*[_type == "alertLog"]`);
+          if (sanityAlertLogs && sanityAlertLogs.length > 0) {
+            const mappedLogs = sanityAlertLogs.map((l) => ({
+              id: l._id.replace(/^alertlog-/, ""),
+              memberId: l.memberId,
+              memberName: l.memberName,
+              gymId: l.gymId,
+              gymName: l.gymName,
+              daysRemaining: l.daysRemaining || 0,
+              alertDate: l.alertDate,
+              customMessage: l.customMessage || "",
+              sent: l.sent || false,
+              sentAt: l.sentAt,
+            }));
+
+            db.alertLogs = mappedLogs;
+            writeDb(db);
+            return res.json(mappedLogs);
+          }
+        } catch (err) {
+          console.error("Failed to fetch alert logs from Sanity:", err);
+        }
+      }
+    }
     res.json(db.alertLogs);
   });
 
   // Get manager logs for a gym
-  app.get("/api/gyms/:gymId/manager-logs", (req, res) => {
+  app.get("/api/gyms/:gymId/manager-logs", async (req, res) => {
     const { gymId } = req.params;
     const db = readDb();
+
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const sanityLogs = await client.fetch<any[]>(
+            `*[_type == "managerLog" && gymId == $gymId] | order(createdAt desc)`,
+            { gymId }
+          );
+          if (sanityLogs && sanityLogs.length > 0) {
+            const mappedLogs = sanityLogs.map((l) => ({
+              id: l._id.replace(/^managerlog-/, ""),
+              gymId: l.gymId,
+              action: l.action,
+              details: l.details,
+              createdAt: l.createdAt,
+            }));
+
+            db.managerLogs = db.managerLogs || [];
+            let dbChanged = false;
+            for (const item of mappedLogs) {
+              const idx = db.managerLogs.findIndex(x => x.id === item.id);
+              if (idx > -1) {
+                db.managerLogs[idx] = { ...db.managerLogs[idx], ...item };
+              } else {
+                db.managerLogs.push(item);
+              }
+              dbChanged = true;
+            }
+            if (dbChanged) {
+              writeDb(db);
+            }
+            mappedLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+            return res.json(mappedLogs);
+          }
+        } catch (err) {
+          console.error("Failed to fetch manager logs from Sanity, falling back to local:", err);
+        }
+      }
+    }
+
     const logs = (db.managerLogs || []).filter((l) => l.gymId === gymId);
     res.json(logs);
   });
 
   // Clear manager logs for a gym
-  app.post("/api/gyms/:gymId/manager-logs/clear", (req, res) => {
+  app.post("/api/gyms/:gymId/manager-logs/clear", async (req, res) => {
     const { gymId } = req.params;
     const db = readDb();
     if (db.managerLogs) {
       db.managerLogs = db.managerLogs.filter((l) => l.gymId !== gymId);
     }
     writeDb(db);
+
+    // If Sanity is active, delete them from Sanity too
+    if (db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        try {
+          const logsToDelete = await client.fetch<any[]>(
+            `*[_type == "managerLog" && gymId == $gymId]`,
+            { gymId }
+          );
+          for (const log of logsToDelete) {
+            await client.delete(log._id);
+          }
+        } catch (err) {
+          console.error("Sanity managerLogs clear failed", err);
+        }
+      }
+    }
+
     res.json({ success: true });
   });
 
