@@ -257,7 +257,16 @@ export default function ManagerDashboard({
   const [configPrimary, setConfigPrimary] = useState<string>(() => gym?.primaryColor || "#0f766e");
   const [configSecondary, setConfigSecondary] = useState<string>(() => gym?.secondaryColor || "#f97316");
   const [configPlans, setConfigPlans] = useState<SubscriptionPlan[]>(() => gym?.subscriptionPlans || []);
+  const [configRegistrationFee, setConfigRegistrationFee] = useState<number>(() => gym?.fraisInscription || 5000);
   const [savingConfig, setSavingConfig] = useState<boolean>(false);
+  const [invoices, setInvoices] = useState<Invoice[]>(() => {
+    try {
+      const cached = localStorage.getItem(`invoices_${gymId}`);
+      return cached ? JSON.parse(cached) : [];
+    } catch {
+      return [];
+    }
+  });
 
   const [showNotificationsDropdown, setShowNotificationsDropdown] = useState<boolean>(false);
 
@@ -374,6 +383,16 @@ export default function ManagerDashboard({
       setActiveView(activeViewProp);
     }
   }, [activeViewProp]);
+
+  useEffect(() => {
+    const handleSync = () => {
+      loadGymData();
+    };
+    window.addEventListener("gymsync_data_synced", handleSync);
+    return () => {
+      window.removeEventListener("gymsync_data_synced", handleSync);
+    };
+  }, []);
 
   // Network connection listeners for instant feedback & sync
   useEffect(() => {
@@ -514,6 +533,7 @@ export default function ManagerDashboard({
           setConfigPrimary(currentGym.primaryColor || "#0f766e");
           setConfigSecondary(currentGym.secondaryColor || "#f97316");
           setConfigPlans(currentGym.subscriptionPlans || []);
+          setConfigRegistrationFee(currentGym.fraisInscription || 5000);
         }
       })
       .catch((err) => {
@@ -527,9 +547,10 @@ export default function ManagerDashboard({
       fetch("/api/alerts/expiring").then((res) => res.json()),
       fetch(`/api/gyms/${gymId}/notifications`).then((res) => res.json()),
       fetch(`/api/gyms/${gymId}/one-time-sessions`).then((res) => res.json()),
-      fetch(`/api/gyms/${gymId}/manager-logs`).then((res) => res.json()).catch(() => [])
+      fetch(`/api/gyms/${gymId}/manager-logs`).then((res) => res.json()).catch(() => []),
+      fetch(`/api/gyms/${gymId}/invoices`).then((res) => res.json()).catch(() => [])
     ])
-      .then(([membersList, allMembersList, expiringList, notificationsList, sessionsList, logsList]) => {
+      .then(([membersList, allMembersList, expiringList, notificationsList, sessionsList, logsList, invoicesList]) => {
         setMembers(membersList);
         localStorage.setItem(`members_${gymId}`, JSON.stringify(membersList));
 
@@ -541,6 +562,11 @@ export default function ManagerDashboard({
         if (Array.isArray(allMembersList)) {
           setAllMembers(allMembersList);
           localStorage.setItem("allMembers", JSON.stringify(allMembersList));
+        }
+
+        if (Array.isArray(invoicesList)) {
+          setInvoices(invoicesList);
+          localStorage.setItem(`invoices_${gymId}`, JSON.stringify(invoicesList));
         }
         
         // filter expiring list to only this gym
@@ -717,6 +743,7 @@ export default function ManagerDashboard({
       primaryColor: configPrimary,
       secondaryColor: configSecondary,
       subscriptionPlans: configPlans,
+      fraisInscription: configRegistrationFee,
     };
 
     fetch("/api/gyms", {
@@ -861,15 +888,23 @@ export default function ManagerDashboard({
     const selectedPlan = gym?.subscriptionPlans.find((p) => p.name === member.subscriptionType);
     const invoiceNum = `FAC-${gymId.replace("gym-", "")}-${Date.now().toString().slice(-6)}`;
     
+    // Check if the member has previous invoices
+    const memberInvoicesCount = invoices.filter(inv => inv.memberId === member.id).length;
+    const isNewMember = memberInvoicesCount === 0;
+    
+    const regFee = isNewMember ? (gym?.fraisInscription ?? 5000) : 0;
+    const planPrice = selectedPlan?.price || 40;
+    
     setInvoiceDetails({
       memberId: member.id,
       gymId: gymId,
       invoiceNumber: invoiceNum,
       date: "2026-06-25", // current simulated date
-      amount: selectedPlan?.price || 40,
+      amount: planPrice + regFee,
       planName: member.subscriptionType,
       paymentMethod: "Espèces", // Default
       status: "Paid",
+      registrationFee: isNewMember ? regFee : undefined
     });
     setIsInvoiceModalOpen(true);
   };
@@ -1449,14 +1484,24 @@ export default function ManagerDashboard({
     const head = [["Désignation de la formule", "Période de Validité", "Montant"]];
     
     const amount = invoiceDetails.amount || 0;
+    const regFee = invoiceDetails.registrationFee || 0;
+    const planPrice = amount - regFee;
 
     const body = [
       [
         invoiceDetails.planName || "Abonnement Club",
         `${selectedInvoiceMember.subscriptionStart} au ${selectedInvoiceMember.subscriptionEnd}`,
-        `${amount.toLocaleString('fr-FR')} FCFA`
+        `${planPrice.toLocaleString('fr-FR')} FCFA`
       ]
     ];
+
+    if (regFee > 0) {
+      body.push([
+        "Frais d'inscription annuel",
+        "-",
+        `${regFee.toLocaleString('fr-FR')} FCFA`
+      ]);
+    }
 
     autoTable(doc, {
       startY: 96,
@@ -3924,6 +3969,22 @@ export default function ManagerDashboard({
                 <p className="text-[10px] text-slate-400">Ce slogan s'affichera fièrement en en-tête de vos factures officielles et documents d'adhérents.</p>
               </div>
 
+              {/* Frais d'inscription annuel input field */}
+              <div className="space-y-2 md:col-span-2 border-t border-slate-100 pt-4">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Frais d'inscription annuel (FCFA) :
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  value={configRegistrationFee}
+                  onChange={(e) => setConfigRegistrationFee(Number(e.target.value))}
+                  placeholder="Ex: 5000"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-sm focus:outline-none focus:border-blue-500 text-slate-800 font-medium"
+                />
+                <p className="text-[10px] text-slate-400">Montant des frais d'inscription annuel exigé lors du premier enregistrement d'un adhérent.</p>
+              </div>
+
               {/* Theme colors block */}
               <div className="space-y-4">
                 <span className="block text-xs font-bold uppercase tracking-wider text-slate-500">
@@ -4574,6 +4635,28 @@ export default function ManagerDashboard({
                 </div>
               </div>
 
+              <div className="flex items-center gap-2 mt-2 pt-2 border-t border-slate-100">
+                <input
+                  type="checkbox"
+                  id="includeRegFee"
+                  checked={invoiceDetails.registrationFee !== undefined && invoiceDetails.registrationFee > 0}
+                  onChange={(e) => {
+                    const hasFee = e.target.checked;
+                    const fee = hasFee ? (gym?.fraisInscription ?? 5000) : 0;
+                    const planPrice = gym?.subscriptionPlans.find((p) => p.name === selectedInvoiceMember.subscriptionType)?.price || 40;
+                    setInvoiceDetails({
+                      ...invoiceDetails,
+                      registrationFee: hasFee ? fee : undefined,
+                      amount: planPrice + fee
+                    });
+                  }}
+                  className="rounded text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer"
+                />
+                <label htmlFor="includeRegFee" className="text-xs text-slate-700 font-semibold cursor-pointer">
+                  Inclure les frais d'inscription annuel ({ (gym?.fraisInscription ?? 5000).toLocaleString('fr-FR') } FCFA)
+                </label>
+              </div>
+
               {/* Invoice Sheet Visual Preview */}
               <div className="border border-slate-200 p-5 rounded-2xl bg-white space-y-4 shadow-sm text-xs">
                 <div className="flex justify-between items-start border-b border-slate-100 pb-3">
@@ -4625,7 +4708,7 @@ export default function ManagerDashboard({
                     <tr className="border-b border-slate-200 text-slate-400 uppercase text-[9px] font-bold">
                       <th className="pb-1.5 font-bold">Désignation de la formule</th>
                       <th className="pb-1.5 text-center font-bold">Période</th>
-                      <th className="pb-1.5 text-right font-bold">Prix HT</th>
+                      <th className="pb-1.5 text-right font-bold">Montant</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4634,17 +4717,24 @@ export default function ManagerDashboard({
                       <td className="py-2.5 text-center text-slate-500 font-mono">
                         {selectedInvoiceMember.subscriptionStart} au {selectedInvoiceMember.subscriptionEnd}
                       </td>
-                      <td className="py-2.5 text-right font-mono">{Math.round((invoiceDetails.amount || 0) * 0.8333).toLocaleString('fr-FR')} FCFA</td>
+                      <td className="py-2.5 text-right font-mono">
+                        {((invoiceDetails.amount || 0) - (invoiceDetails.registrationFee || 0)).toLocaleString('fr-FR')} FCFA
+                      </td>
                     </tr>
+                    {invoiceDetails.registrationFee !== undefined && invoiceDetails.registrationFee > 0 && (
+                      <tr className="text-slate-800 font-medium border-t border-slate-100">
+                        <td className="py-2.5">Frais d'inscription annuel</td>
+                        <td className="py-2.5 text-center text-slate-500 font-mono">-</td>
+                        <td className="py-2.5 text-right font-mono">
+                          {invoiceDetails.registrationFee.toLocaleString('fr-FR')} FCFA
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
 
                 <div className="border-t border-slate-100 pt-3 flex flex-col items-end gap-1.5">
-                  <div className="flex justify-between w-44 text-slate-500 text-xs">
-                    <span>TVA (20%) :</span>
-                    <span className="font-mono">{Math.round((invoiceDetails.amount || 0) * 0.1667).toLocaleString('fr-FR')} FCFA</span>
-                  </div>
-                  <div className="flex justify-between w-44 text-slate-800 font-bold text-sm pt-1.5 border-t border-slate-100">
+                  <div className="flex justify-between w-44 text-slate-800 font-bold text-sm pt-1.5">
                     <span>Total Payé :</span>
                     <span className="font-mono text-slate-900">{(invoiceDetails.amount || 0).toLocaleString('fr-FR')} FCFA</span>
                   </div>
@@ -4741,7 +4831,7 @@ export default function ManagerDashboard({
               <tr className="border-b-2 border-black text-xs font-bold uppercase text-gray-500 tracking-wider">
                 <th className="pb-3 font-bold">Désignation de la formule</th>
                 <th className="pb-3 text-center font-bold">Période de Validité</th>
-                <th className="pb-3 text-right font-bold">Prix HT</th>
+                <th className="pb-3 text-right font-bold">Montant</th>
               </tr>
             </thead>
             <tbody>
@@ -4750,16 +4840,23 @@ export default function ManagerDashboard({
                 <td className="py-4 text-center font-mono">
                   {selectedInvoiceMember.subscriptionStart} au {selectedInvoiceMember.subscriptionEnd}
                 </td>
-                <td className="py-4 text-right font-mono">{Math.round((invoiceDetails.amount || 0) * 0.8333).toLocaleString('fr-FR')} FCFA</td>
+                <td className="py-4 text-right font-mono">
+                  {((invoiceDetails.amount || 0) - (invoiceDetails.registrationFee || 0)).toLocaleString('fr-FR')} FCFA
+                </td>
               </tr>
+              {invoiceDetails.registrationFee !== undefined && invoiceDetails.registrationFee > 0 && (
+                <tr className="text-sm text-black font-semibold border-b border-gray-200">
+                  <td className="py-4 text-base">Frais d'inscription annuel</td>
+                  <td className="py-4 text-center font-mono">-</td>
+                  <td className="py-4 text-right font-mono">
+                    {invoiceDetails.registrationFee.toLocaleString('fr-FR')} FCFA
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
 
           <div className="flex flex-col items-end gap-2 mb-12">
-            <div className="flex justify-between w-64 text-sm text-gray-600">
-              <span>TVA (20%) :</span>
-              <span className="font-mono">{Math.round((invoiceDetails.amount || 0) * 0.1667).toLocaleString('fr-FR')} FCFA</span>
-            </div>
             <div className="flex justify-between w-64 font-bold text-lg pt-3 border-t border-black">
               <span>Total Payé :</span>
               <span className="font-mono">{(invoiceDetails.amount || 0).toLocaleString('fr-FR')} FCFA</span>

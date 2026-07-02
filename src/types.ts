@@ -18,6 +18,8 @@ export interface Gym {
   subscriptionEnd?: string; // YYYY-MM-DD
   status?: 'active' | 'blocked';
   notifications?: GymNotification[];
+  fraisInscription?: number; // Frais d'inscription annuel
+  updatedAt?: string;
 }
 
 export interface GymNotification {
@@ -61,6 +63,7 @@ export interface Member {
   allergies?: string;
   occupation?: string; // fonction / profession
   gender?: string; // sexe
+  updatedAt?: string;
 }
 
 export interface Invoice {
@@ -73,6 +76,8 @@ export interface Invoice {
   paymentMethod: string; // 'Espèces' | 'Chèque' | 'Virement' etc (no in-app payment)
   status: 'Paid' | 'Pending';
   planName: string;
+  registrationFee?: number;
+  updatedAt?: string;
 }
 
 export interface AlertLog {
@@ -86,6 +91,7 @@ export interface AlertLog {
   customMessage?: string; // Gemini generated French text
   sent: boolean;
   sentAt?: string;
+  updatedAt?: string;
 }
 
 export interface SanityConfig {
@@ -101,6 +107,7 @@ export interface ManagerLog {
   action: string;
   details: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface OneTimeSession {
@@ -112,5 +119,6 @@ export interface OneTimeSession {
   paymentMethod: string;
   date: string;
   createdAt: string;
+  updatedAt?: string;
 }
 

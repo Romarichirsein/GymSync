@@ -1,6 +1,7 @@
-import { Gym, Member, Invoice, AlertLog, SanityConfig } from "./types";
+import { Gym, Member, Invoice, AlertLog, SanityConfig, OneTimeSession, ManagerLog } from "./types";
 
 const DB_KEY = "gymsync_db";
+let needsSync = true;
 
 const initialGyms: Gym[] = [
   {
@@ -285,6 +286,10 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   const method = (init?.method || "GET").toUpperCase();
   const bodyData = init?.body ? JSON.parse(init.body as string) : null;
 
+  if (method !== "GET" && path !== "/api/login") {
+    needsSync = true;
+  }
+
   // 1. GET /api/gyms
   if (path === "/api/gyms" && method === "GET") {
     const db = getLocalDb();
@@ -346,6 +351,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
   if (path === "/api/gyms" && method === "POST") {
     const db = getLocalDb();
     const gymData = bodyData as Gym;
+    gymData.updatedAt = new Date().toISOString();
     const existingIndex = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(gymData.id));
     if (existingIndex > -1) {
       db.gyms[existingIndex] = { ...db.gyms[existingIndex], ...gymData };
@@ -369,7 +375,8 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
       id: gymData.id || `gym-${Date.now()}`,
       createdAt: new Date().toISOString(),
       status: "active",
-      notifications: []
+      notifications: [],
+      updatedAt: new Date().toISOString()
     };
     db.gyms.push(newGym);
     saveLocalDb(db);
@@ -389,6 +396,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
 
     if (status) gym.status = status;
     if (subscriptionEnd) gym.subscriptionEnd = subscriptionEnd;
+    gym.updatedAt = new Date().toISOString();
     if (!gym.notifications) gym.notifications = [];
 
     if (status === "active") {
@@ -461,6 +469,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     const db = getLocalDb();
     const memberData = bodyData as Member;
     memberData.gymId = cleanId(memberData.gymId);
+    memberData.updatedAt = new Date().toISOString();
     let member: Member;
     if (memberData.id) {
       // Update
@@ -480,7 +489,8 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
         ...memberData,
         id: `mem-${Date.now()}`,
         registrationNumber: regNum,
-        createdAt: new Date().toISOString().split("T")[0]
+        createdAt: new Date().toISOString().split("T")[0],
+        updatedAt: new Date().toISOString()
       };
       db.members.push(member);
     }
@@ -519,6 +529,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     const db = getLocalDb();
     const invoiceData = bodyData as Invoice;
     invoiceData.gymId = cleanId(invoiceData.gymId);
+    invoiceData.updatedAt = new Date().toISOString();
     let invoice: Invoice;
     if (invoiceData.id) {
       const idx = db.invoices.findIndex((i) => i.id === invoiceData.id);
@@ -535,7 +546,8 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
         ...invoiceData,
         id: `inv-${Date.now()}`,
         invoiceNumber: invNum,
-        date: new Date().toISOString().split("T")[0]
+        date: new Date().toISOString().split("T")[0],
+        updatedAt: new Date().toISOString()
       };
       db.invoices.push(invoice);
     }
@@ -681,6 +693,7 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     sessionData.id = sessionData.id || `session-${Date.now()}`;
     sessionData.createdAt = sessionData.createdAt || new Date().toISOString();
     sessionData.date = sessionData.date || new Date().toISOString().split("T")[0];
+    sessionData.updatedAt = new Date().toISOString();
 
     db.oneTimeSessions = db.oneTimeSessions || [];
     db.oneTimeSessions.push(sessionData);
@@ -745,7 +758,139 @@ async function handleLocalStorageFallback(url: string, init?: RequestInit): Prom
     return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "Content-Type": "application/json" } });
   }
 
+  if (path === "/api/sync" && method === "POST") {
+    const db = getLocalDb();
+    return new Response(JSON.stringify({ success: true, db }), { status: 200, headers: { "Content-Type": "application/json" } });
+  }
+
   return new Response(JSON.stringify({ success: false, message: "Route inconnue en mode local." }), { status: 404, headers: { "Content-Type": "application/json" } });
+}
+
+// Intercepts successful online fetch responses and keeps localStorage DB in sync
+function updateLocalDbFromOnlineResponse(url: string, method: string, data: any) {
+  if (!data) return;
+  try {
+    const urlObj = new URL(url, window.location.origin);
+    const path = urlObj.pathname;
+    const db = getLocalDb();
+    let changed = false;
+
+    if (path === "/api/gyms" && method === "GET" && Array.isArray(data)) {
+      db.gyms = data;
+      changed = true;
+    }
+    else if (path === "/api/gyms" && method === "POST" && data.success && data.gym) {
+      const idx = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(data.gym.id));
+      if (idx > -1) {
+        db.gyms[idx] = data.gym;
+      } else {
+        db.gyms.push(data.gym);
+      }
+      changed = true;
+    }
+    else if (path.match(/^\/api\/gyms\/([^/]+)\/status$/) && method === "POST" && data.success && data.gym) {
+      const idx = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(data.gym.id));
+      if (idx > -1) {
+        db.gyms[idx] = data.gym;
+        changed = true;
+      }
+    }
+    else if ((path === "/api/members" || path.match(/^\/api\/gyms\/([^/]+)\/members$/)) && method === "GET" && Array.isArray(data)) {
+      db.members = data;
+      changed = true;
+    }
+    else if (path === "/api/members" && method === "POST" && data.success && data.member) {
+      const idx = db.members.findIndex((m) => m.id === data.member.id);
+      if (idx > -1) {
+        db.members[idx] = data.member;
+      } else {
+        db.members.push(data.member);
+      }
+      changed = true;
+    }
+    else if (path.match(/^\/api\/members\/([^/]+)$/) && method === "DELETE" && data.success) {
+      const memberId = path.split("/").pop();
+      if (memberId) {
+        db.members = db.members.filter((m) => m.id !== memberId);
+        db.invoices = db.invoices.filter((i) => i.memberId !== memberId);
+        changed = true;
+      }
+    }
+    else if ((path === "/api/invoices" || path.match(/^\/api\/gyms\/([^/]+)\/invoices$/)) && method === "GET" && Array.isArray(data)) {
+      db.invoices = data;
+      changed = true;
+    }
+    else if (path === "/api/invoices" && method === "POST" && data.success && data.invoice) {
+      const idx = db.invoices.findIndex((i) => i.id === data.invoice.id);
+      if (idx > -1) {
+        db.invoices[idx] = data.invoice;
+      } else {
+        db.invoices.push(data.invoice);
+      }
+      changed = true;
+    }
+    else if ((path === "/api/one-time-sessions" || path.match(/^\/api\/gyms\/([^/]+)\/one-time-sessions$/)) && method === "GET" && Array.isArray(data)) {
+      db.oneTimeSessions = data;
+      changed = true;
+    }
+    else if (path === "/api/one-time-sessions" && method === "POST" && data.success && data.session) {
+      db.oneTimeSessions = db.oneTimeSessions || [];
+      const idx = db.oneTimeSessions.findIndex((s) => s.id === data.session.id);
+      if (idx > -1) {
+        db.oneTimeSessions[idx] = data.session;
+      } else {
+        db.oneTimeSessions.push(data.session);
+      }
+      changed = true;
+    }
+    else if (path.match(/^\/api\/one-time-sessions\/([^/]+)$/) && method === "DELETE" && data.success) {
+      const sessionId = path.split("/").pop();
+      if (sessionId && db.oneTimeSessions) {
+        db.oneTimeSessions = db.oneTimeSessions.filter((s) => s.id !== sessionId);
+        changed = true;
+      }
+    }
+    else if (path.match(/^\/api\/gyms\/([^/]+)\/manager-logs$/) && method === "GET" && Array.isArray(data)) {
+      db.managerLogs = data;
+      changed = true;
+    }
+    else if (path === "/api/sync" && method === "POST" && data.success && data.db) {
+      localStorage.setItem(DB_KEY, JSON.stringify(data.db));
+      return;
+    }
+
+    if (changed) {
+      saveLocalDb(db);
+    }
+  } catch (err) {
+    console.warn("Failed parsing online path in interceptor:", err);
+  }
+}
+
+let syncPromise: Promise<void> | null = null;
+
+async function performSync() {
+  const localDb = localStorage.getItem(DB_KEY);
+  if (!localDb) return;
+  try {
+    const parsed = JSON.parse(localDb);
+    const response = await originalFetch("/api/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parsed)
+    });
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.db) {
+        localStorage.setItem(DB_KEY, JSON.stringify(data.db));
+        console.log("[Interceptor Sync] Synchronized offline changes with server successfully.");
+        window.dispatchEvent(new Event("gymsync_data_synced"));
+        needsSync = false;
+      }
+    }
+  } catch (err) {
+    console.warn("[Interceptor Sync] Failed to synchronize offline data:", err);
+  }
 }
 
 // Override window.fetch with fallback capabilities
@@ -755,12 +900,26 @@ const customFetch = async function (input: RequestInfo | URL, init?: RequestInit
   const url = typeof input === "string" ? input : (input instanceof URL ? input.href : input.url);
 
   if (url.startsWith("/api")) {
+    // If online and we have unsynced changes, perform synchronization first before any API calls
+    if (navigator.onLine && url !== "/api/sync" && url !== "/api/login" && needsSync) {
+      if (!syncPromise) {
+        syncPromise = performSync().finally(() => {
+          syncPromise = null;
+        });
+      }
+      await syncPromise;
+    }
+
     try {
       const response = await originalFetch(input, init);
       
       // If Vercel or other hosts serve HTML index for missing /api routes, clone and inspect
       const contentType = response.headers.get("content-type");
       if (response.ok && contentType && contentType.includes("application/json")) {
+        const cloned = response.clone();
+        cloned.json().then((data) => {
+          updateLocalDbFromOnlineResponse(url, init?.method || "GET", data);
+        }).catch((err) => console.warn("Failed to update local db from online response", err));
         return response;
       }
 

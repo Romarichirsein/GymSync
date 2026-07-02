@@ -33,7 +33,8 @@ import {
   ShieldAlert,
   Download,
   Code,
-  Zap
+  Zap,
+  WifiOff
 } from "lucide-react";
 import { motion } from "motion/react";
 
@@ -86,12 +87,15 @@ export default function AdminDashboard({
     address: "",
     managerEmail: "",
     managerPassword: "",
+    fraisInscription: 5000,
     subscriptionPlans: [
       { id: "p-month", name: "Pass Mensuel", durationMonths: 1, price: 39 },
       { id: "p-quarter", name: "Formule Trimestre", durationMonths: 3, price: 99 },
       { id: "p-year", name: "Abonnement Annuel", durationMonths: 12, price: 349 },
     ],
   });
+
+  const [isOffline, setIsOffline] = useState<boolean>(() => typeof navigator !== "undefined" ? !navigator.onLine : false);
 
   // Action status/messages
   const [message, setMessage] = useState<{ text: string; type: "success" | "error" | "info" } | null>(null);
@@ -136,6 +140,36 @@ export default function AdminDashboard({
 
   useEffect(() => {
     loadData();
+  }, []);
+
+  useEffect(() => {
+    const handleSync = () => {
+      loadData();
+    };
+    window.addEventListener("gymsync_data_synced", handleSync);
+    return () => {
+      window.removeEventListener("gymsync_data_synced", handleSync);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOffline(false);
+      showToast("Connexion internet rétablie. Synchronisation en cours...", "success");
+      loadData();
+    };
+    const handleOffline = () => {
+      setIsOffline(true);
+      showToast("Connexion internet perdue. Mode de secours local actif.", "info");
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
   }, []);
 
   useEffect(() => {
@@ -501,6 +535,7 @@ export default function AdminDashboard({
       address: "",
       managerEmail: "",
       managerPassword: "",
+      fraisInscription: 5000,
       subscriptionPlans: [
         { id: "p-month", name: "Pass Mensuel", durationMonths: 1, price: 39 },
         { id: "p-quarter", name: "Formule Trimestre", durationMonths: 3, price: 99 },
@@ -585,6 +620,22 @@ export default function AdminDashboard({
         </div>
 
         <div className="flex items-center gap-4">
+          {/* Network Connection Badge */}
+          {isOffline ? (
+            <div className="flex items-center gap-1 bg-rose-500/20 border border-rose-500/30 text-rose-200 text-[10px] font-extrabold px-2.5 py-1.5 rounded-xl animate-pulse">
+              <WifiOff className="w-3.5 h-3.5 text-rose-400" />
+              <span>Hors-ligne</span>
+            </div>
+          ) : (
+            <div className="hidden sm:flex items-center gap-1 bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2.5 py-1.5 rounded-xl">
+              <span className="relative flex h-2 w-2 mr-0.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span>En ligne</span>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
             <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
             <span>Mode {sanityConfig.useSanity ? "Cloud Sanity" : "Local Fallback"}</span>
@@ -907,7 +958,7 @@ export default function AdminDashboard({
                         />
                       </div>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         <div>
                           <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
                             Adresse Email de la salle :
@@ -924,13 +975,28 @@ export default function AdminDashboard({
 
                         <div>
                           <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
-                            Téléphone de la salle :
+                            Téléphone :
                           </label>
                           <input
                             type="text"
                             value={editingGym.phone}
                             onChange={(e) => setEditingGym({ ...editingGym, phone: e.target.value })}
                             placeholder="+33 1 23 45 67 89"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2 px-3 text-sm focus:outline-none focus:border-blue-500 text-slate-800"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-500 mb-1.5">
+                            Frais Inscription Annuel (FCFA) :
+                          </label>
+                          <input
+                            type="number"
+                            required
+                            min={0}
+                            value={editingGym.fraisInscription !== undefined ? editingGym.fraisInscription : 5000}
+                            onChange={(e) => setEditingGym({ ...editingGym, fraisInscription: Number(e.target.value) })}
+                            placeholder="Ex: 5000"
                             className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2 px-3 text-sm focus:outline-none focus:border-blue-500 text-slate-800"
                           />
                         </div>

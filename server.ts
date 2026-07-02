@@ -6,7 +6,7 @@ import { GoogleGenAI } from "@google/genai";
 import { createClient } from "@sanity/client";
 import { Gym, Member, Invoice, AlertLog, SanityConfig, ManagerLog, OneTimeSession } from "./src/types.js";
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const DB_PATH = path.join(process.cwd(), "data", "db.json");
 
 // Ensure data directory exists
@@ -511,6 +511,11 @@ async function startServer() {
           managerEmail: gym.managerEmail || "",
           managerPassword: gym.managerPassword || "",
           subscriptionPlans: gym.subscriptionPlans || [],
+          subscriptionEnd: gym.subscriptionEnd || "",
+          status: gym.status || "active",
+          notifications: gym.notifications || [],
+          fraisInscription: gym.fraisInscription || 5000,
+          updatedAt: gym.updatedAt || new Date().toISOString()
         });
       }
 
@@ -540,6 +545,7 @@ async function startServer() {
           allergies: mem.allergies || "",
           occupation: mem.occupation || "",
           gender: mem.gender || "",
+          updatedAt: mem.updatedAt || new Date().toISOString()
         });
       }
 
@@ -556,6 +562,8 @@ async function startServer() {
           paymentMethod: inv.paymentMethod,
           status: inv.status,
           planName: inv.planName,
+          registrationFee: inv.registrationFee,
+          updatedAt: inv.updatedAt || new Date().toISOString()
         });
       }
 
@@ -572,6 +580,7 @@ async function startServer() {
           paymentMethod: sess.paymentMethod,
           date: sess.date,
           createdAt: sess.createdAt,
+          updatedAt: sess.updatedAt || new Date().toISOString()
         });
       }
 
@@ -620,6 +629,207 @@ async function startServer() {
   });
 
 
+  // Database synchronization endpoint
+  app.post("/api/sync", async (req, res) => {
+    const clientDb = req.body as Schema;
+    if (!clientDb) {
+      return res.status(400).json({ success: false, message: "Base de données client requise." });
+    }
+
+    const db = readDb();
+    let dbChanged = false;
+
+    // Helper to merge arrays of items based on ID and updatedAt
+    function mergeEntities<T extends { id: string; updatedAt?: string }>(
+      serverList: T[],
+      clientList: T[]
+    ): { merged: T[]; changed: boolean } {
+      const mergedMap = new Map<string, T>();
+      
+      // Load server items
+      for (const item of serverList) {
+        mergedMap.set(cleanId(item.id), item);
+      }
+
+      let changed = false;
+
+      // Merge client items
+      for (const item of clientList) {
+        const key = cleanId(item.id);
+        const serverItem = mergedMap.get(key);
+        if (!serverItem) {
+          mergedMap.set(key, item);
+          changed = true;
+        } else {
+          const clientTime = item.updatedAt ? new Date(item.updatedAt).getTime() : 0;
+          const serverTime = serverItem.updatedAt ? new Date(serverItem.updatedAt).getTime() : 0;
+          if (clientTime > serverTime) {
+            mergedMap.set(key, { ...serverItem, ...item });
+            changed = true;
+          }
+        }
+      }
+
+      return {
+        merged: Array.from(mergedMap.values()),
+        changed
+      };
+    }
+
+    // 1. Gyms
+    if (clientDb.gyms && Array.isArray(clientDb.gyms)) {
+      const res = mergeEntities(db.gyms, clientDb.gyms);
+      db.gyms = res.merged;
+      if (res.changed) dbChanged = true;
+    }
+
+    // 2. Members
+    if (clientDb.members && Array.isArray(clientDb.members)) {
+      const res = mergeEntities(db.members, clientDb.members);
+      db.members = res.merged;
+      if (res.changed) dbChanged = true;
+    }
+
+    // 3. Invoices
+    if (clientDb.invoices && Array.isArray(clientDb.invoices)) {
+      const res = mergeEntities(db.invoices, clientDb.invoices);
+      db.invoices = res.merged;
+      if (res.changed) dbChanged = true;
+    }
+
+    // 4. One-Time Sessions
+    db.oneTimeSessions = db.oneTimeSessions || [];
+    if (clientDb.oneTimeSessions && Array.isArray(clientDb.oneTimeSessions)) {
+      const res = mergeEntities(db.oneTimeSessions, clientDb.oneTimeSessions);
+      db.oneTimeSessions = res.merged;
+      if (res.changed) dbChanged = true;
+    }
+
+    // 5. Manager Logs
+    db.managerLogs = db.managerLogs || [];
+    if (clientDb.managerLogs && Array.isArray(clientDb.managerLogs)) {
+      const res = mergeEntities(db.managerLogs, clientDb.managerLogs);
+      db.managerLogs = res.merged;
+      if (res.changed) dbChanged = true;
+    }
+
+    // 6. Alert Logs
+    db.alertLogs = db.alertLogs || [];
+    if (clientDb.alertLogs && Array.isArray(clientDb.alertLogs)) {
+      const res = mergeEntities(db.alertLogs, clientDb.alertLogs);
+      db.alertLogs = res.merged;
+      if (res.changed) dbChanged = true;
+    }
+
+    if (dbChanged) {
+      writeDb(db);
+    }
+
+    // If Sanity is active, sync everything in the background
+    if (db.sanityConfig && db.sanityConfig.useSanity) {
+      const client = getSanityClient(db.sanityConfig);
+      if (client) {
+        // Run sync asynchronously to not block the response
+        (async () => {
+          try {
+            console.log("[Sync Service] Syncing merged database to Sanity...");
+            // Sync Gyms
+            for (const gym of db.gyms) {
+              await client.createOrReplace({
+                _type: "gym",
+                _id: `gym-${gym.id}`,
+                name: gym.name,
+                slug: gym.slug,
+                logo: gym.logo || "",
+                slogan: gym.slogan || "",
+                primaryColor: gym.primaryColor,
+                secondaryColor: gym.secondaryColor,
+                email: gym.email,
+                phone: gym.phone,
+                address: gym.address,
+                createdAt: gym.createdAt,
+                managerEmail: gym.managerEmail || "",
+                managerPassword: gym.managerPassword || "",
+                subscriptionPlans: gym.subscriptionPlans || [],
+                subscriptionEnd: gym.subscriptionEnd || "",
+                status: gym.status || "active",
+                notifications: gym.notifications || [],
+                fraisInscription: gym.fraisInscription || 5000,
+                updatedAt: gym.updatedAt || new Date().toISOString()
+              });
+            }
+            // Sync Members
+            for (const mem of db.members) {
+              await client.createOrReplace({
+                _type: "member",
+                _id: `mem-${mem.id}`,
+                gymId: mem.gymId,
+                name: mem.name,
+                email: mem.email,
+                phone: mem.phone,
+                photo: mem.photo || "",
+                subscriptionType: mem.subscriptionType,
+                subscriptionStart: mem.subscriptionStart,
+                subscriptionEnd: mem.subscriptionEnd,
+                status: mem.status,
+                registrationNumber: mem.registrationNumber,
+                createdAt: mem.createdAt,
+                age: mem.age || 0,
+                height: mem.height || 0,
+                medicalHistory: mem.medicalHistory || "",
+                emergencyContactName: mem.emergencyContactName || "",
+                emergencyContactPhone: mem.emergencyContactPhone || "",
+                neighborhood: mem.neighborhood || "",
+                physicalGoals: mem.physicalGoals || "",
+                allergies: mem.allergies || "",
+                occupation: mem.occupation || "",
+                gender: mem.gender || "",
+                updatedAt: mem.updatedAt || new Date().toISOString()
+              });
+            }
+            // Sync Invoices
+            for (const inv of db.invoices) {
+              await client.createOrReplace({
+                _type: "invoice",
+                _id: `inv-${inv.id}`,
+                memberId: inv.memberId,
+                gymId: inv.gymId,
+                invoiceNumber: inv.invoiceNumber,
+                date: inv.date,
+                amount: inv.amount,
+                paymentMethod: inv.paymentMethod,
+                status: inv.status,
+                planName: inv.planName,
+                registrationFee: inv.registrationFee,
+                updatedAt: inv.updatedAt || new Date().toISOString()
+              });
+            }
+            // Sync Sessions
+            for (const sess of db.oneTimeSessions || []) {
+              await client.createOrReplace({
+                _type: "oneTimeSession",
+                _id: `session-${sess.id}`,
+                gymId: sess.gymId,
+                visitorName: sess.visitorName,
+                visitorPhone: sess.visitorPhone || "",
+                amount: sess.amount,
+                paymentMethod: sess.paymentMethod,
+                date: sess.date,
+                createdAt: sess.createdAt,
+                updatedAt: sess.updatedAt || new Date().toISOString()
+              });
+            }
+            console.log("[Sync Service] Syncing to Sanity finished.");
+          } catch (err) {
+            console.error("[Sync Service] Sanity sync failed", err);
+          }
+        })();
+      }
+    }
+
+    res.json({ success: true, db });
+  });
+
   // GYMS Endpoints
   app.get("/api/gyms", async (req, res) => {
     const db = readDb();
@@ -650,7 +860,9 @@ async function startServer() {
                 subscriptionPlans: g.subscriptionPlans || [],
                 subscriptionEnd: g.subscriptionEnd || "",
                 status: g.status || "active",
-                notifications: g.notifications || []
+                notifications: g.notifications || [],
+                fraisInscription: g.fraisInscription || 5000,
+                updatedAt: g.updatedAt || new Date().toISOString()
               };
 
               const existingIndex = db.gyms.findIndex((x) => x.id === gymId);
@@ -691,6 +903,7 @@ async function startServer() {
     if (subscriptionEnd) {
       gym.subscriptionEnd = subscriptionEnd;
     }
+    gym.updatedAt = new Date().toISOString();
 
     if (!gym.notifications) {
       gym.notifications = [];
@@ -742,7 +955,9 @@ async function startServer() {
             subscriptionPlans: gym.subscriptionPlans || [],
             subscriptionEnd: gym.subscriptionEnd || "",
             status: gym.status || "active",
-            notifications: gym.notifications || []
+            notifications: gym.notifications || [],
+            fraisInscription: gym.fraisInscription || 5000,
+            updatedAt: gym.updatedAt || new Date().toISOString()
           });
         } catch (err) {
           console.error("Sanity status sync failed", err);
@@ -915,6 +1130,7 @@ async function startServer() {
   app.post("/api/gyms", async (req, res) => {
     const db = readDb();
     const gymData = req.body as Gym;
+    gymData.updatedAt = new Date().toISOString();
 
     const existingIndex = db.gyms.findIndex((g) => cleanId(g.id) === cleanId(gymData.id));
     if (existingIndex > -1) {
@@ -949,6 +1165,11 @@ async function startServer() {
             managerEmail: gymData.managerEmail || "",
             managerPassword: gymData.managerPassword || "",
             subscriptionPlans: gymData.subscriptionPlans || [],
+            subscriptionEnd: gymData.subscriptionEnd || "",
+            status: gymData.status || "active",
+            notifications: gymData.notifications || [],
+            fraisInscription: gymData.fraisInscription || 5000,
+            updatedAt: gymData.updatedAt
           });
         } catch (err) {
           console.error("Sanity single gym sync failed", err);
@@ -1088,6 +1309,7 @@ async function startServer() {
     const db = readDb();
     const memData = req.body as Member;
     memData.gymId = cleanId(memData.gymId);
+    memData.updatedAt = new Date().toISOString();
 
     const existingIndex = db.members.findIndex((m) => m.id === memData.id);
     if (existingIndex > -1) {
@@ -1135,6 +1357,7 @@ async function startServer() {
             allergies: memData.allergies || "",
             occupation: memData.occupation || "",
             gender: memData.gender || "",
+            updatedAt: memData.updatedAt
           });
         } catch (err) {
           console.error("Sanity member sync failed", err);
@@ -1192,6 +1415,8 @@ async function startServer() {
               paymentMethod: inv.paymentMethod,
               status: inv.status,
               planName: inv.planName,
+              registrationFee: inv.registrationFee,
+              updatedAt: inv.updatedAt || new Date().toISOString()
             }));
 
             let dbChanged = false;
@@ -1243,6 +1468,8 @@ async function startServer() {
               paymentMethod: inv.paymentMethod || "Espèces",
               status: inv.status || "Paid",
               planName: inv.planName || "",
+              registrationFee: inv.registrationFee || 0,
+              updatedAt: inv.updatedAt || new Date().toISOString()
             }));
 
             // update local cache
@@ -1278,6 +1505,7 @@ async function startServer() {
 
     invoiceData.id = invoiceData.id || `inv-${Date.now()}`;
     invoiceData.invoiceNumber = invoiceData.invoiceNumber || `FAC-${Date.now().toString().slice(-6)}`;
+    invoiceData.updatedAt = new Date().toISOString();
     db.invoices.push(invoiceData);
 
     const associatedMember = db.members.find((m) => m.id === invoiceData.memberId);
@@ -1301,6 +1529,8 @@ async function startServer() {
             paymentMethod: invoiceData.paymentMethod,
             status: invoiceData.status,
             planName: invoiceData.planName,
+            registrationFee: invoiceData.registrationFee,
+            updatedAt: invoiceData.updatedAt
           });
         } catch (err) {
           console.error("Sanity invoice sync failed", err);
@@ -1418,6 +1648,7 @@ async function startServer() {
     sessionData.id = sessionData.id || `session-${Date.now()}`;
     sessionData.createdAt = sessionData.createdAt || new Date().toISOString();
     sessionData.date = sessionData.date || new Date().toISOString().split("T")[0];
+    sessionData.updatedAt = new Date().toISOString();
     
     db.oneTimeSessions = db.oneTimeSessions || [];
     db.oneTimeSessions.push(sessionData);
@@ -1445,6 +1676,7 @@ async function startServer() {
             paymentMethod: sessionData.paymentMethod,
             date: sessionData.date,
             createdAt: sessionData.createdAt,
+            updatedAt: sessionData.updatedAt
           });
         } catch (err) {
           console.error("Sanity session sync failed", err);

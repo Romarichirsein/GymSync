@@ -3,6 +3,30 @@ import LoginPortal from "./components/LoginPortal";
 import AdminDashboard from "./components/AdminDashboard";
 import ManagerDashboard from "./components/ManagerDashboard";
 
+async function syncOfflineData() {
+  const localDb = localStorage.getItem("gymsync_db");
+  if (!localDb) return;
+  try {
+    const parsed = JSON.parse(localDb);
+    const response = await fetch("/api/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(parsed)
+    });
+    if (response.ok) {
+      const data = await response.json();
+      if (data.success && data.db) {
+        localStorage.setItem("gymsync_db", JSON.stringify(data.db));
+        console.log("Offline data synchronized with server successfully.");
+        // Dispatch custom event to notify all components to reload data
+        window.dispatchEvent(new Event("gymsync_data_synced"));
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to automatically synchronize offline data:", err);
+  }
+}
+
 export default function App() {
   // Load initial session state from localStorage to prevent flash of login screen
   const [userRole, setUserRole] = useState<"admin" | "manager" | null>(() => {
@@ -11,6 +35,22 @@ export default function App() {
   const [activeGymId, setActiveGymId] = useState<string | undefined>(() => {
     return localStorage.getItem("activeGymId") || undefined;
   });
+
+  // Sync on load and when online event fires
+  useEffect(() => {
+    if (navigator.onLine) {
+      syncOfflineData();
+    }
+
+    const handleOnline = () => {
+      syncOfflineData();
+    };
+
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
 
   // Track sub-tabs and sub-views to keep them in URL
   const [adminTab, setAdminTab] = useState<"gyms" | "sanity" | "logs" | "reports">((() => {
